@@ -84,6 +84,34 @@ export type ShapeDefinition = {
   accent: string;
 };
 
+export type SystemUnderstanding = {
+  productGoal: string;
+  fullGraphSummary: string;
+  primaryFlow: string[];
+  majorSubsystems: string[];
+  coordinationRisks: string[];
+};
+
+export type ScopeContract = {
+  mode: "full" | "selection";
+  selectedNodeIds: string[];
+  selectedNodeTitles: string[];
+  currentStepGoal: string;
+  mustImplement: string[];
+  requiredBoundaries: string[];
+  outOfScope: string[];
+  implementationOrder: string[];
+  doneCriteria: string[];
+  testCriteria: string[];
+};
+
+export type Recommendation = {
+  title: string;
+  rationale: string;
+  implementationHint: string;
+  impact: "low" | "medium" | "high";
+};
+
 export type SpecResponse = {
   ok: boolean;
   source: "codex" | "fallback";
@@ -91,6 +119,8 @@ export type SpecResponse = {
   spec: {
     title: string;
     overview: string;
+    systemUnderstanding: SystemUnderstanding;
+    scopeContract: ScopeContract;
     architecture: string[];
     executionPlan: string[];
     nodeSummaries: Array<{
@@ -105,6 +135,7 @@ export type SpecResponse = {
     buildPrompt: string;
     iterationPrompt: string;
     assumptions: string[];
+    recommendations: Recommendation[];
   };
   raw?: string;
   error?: string;
@@ -155,6 +186,132 @@ export type BuildResponse = {
   output: string;
   promptPath?: string;
   logPath?: string;
+  mistakePath?: string;
+  contractPath?: string;
+  attemptCount?: number;
+  recovered?: boolean;
+  error?: string;
+};
+
+export type NativeWorkspaceEntry = {
+  path: string;
+  size: number;
+  type: string;
+};
+
+export type WorkspaceManifest = {
+  marker: string;
+  app: string;
+  formatVersion: number;
+  workspaceId: string;
+  createdAt: string | null;
+  lastOpenedAt: string | null;
+  graphHash: string | null;
+  state: string | null;
+};
+
+export type StepExecutionState = "annotation" | "approved" | "reachable" | "blocked";
+
+export type StepHistoryEntry = {
+  nodeId: string;
+  approvedAt: string;
+  buildMode: "selection";
+  buildGeneratedAt: string | null;
+  buildLogPath: string | null;
+  buildPromptPath: string | null;
+  verificationSummary: string[];
+};
+
+export type StepHistoryDocument = {
+  version: 1;
+  entries: StepHistoryEntry[];
+};
+
+export type StepBuildContract = {
+  version: 1;
+  mode: "selection";
+  selectedNodeId: string;
+  selectedNodeTitle: string;
+  selectedNodeShape: ShapeType;
+  requiredBoundaries: string[];
+  outOfScope: string[];
+  maxTouchedFiles: number;
+  allowPackageJsonChanges: boolean;
+  allowLockfileChanges: boolean;
+  allowRoutingChanges: boolean;
+  allowedTestTargets: string[];
+  forbiddenFeatureKeywords: string[];
+};
+
+export type WorkflowStateArtifact = {
+  version: 2;
+  graphHash: string | null;
+  approvedGraphHash: string | null;
+  approvedAt: string | null;
+  approvalStale: boolean;
+  approvedNodeIds: string[];
+  reachableNodeIds: string[];
+  blockedNodeIds: string[];
+  selectedNodeIds: string[];
+  lastSpecMode: "full" | "selection" | null;
+  specGeneratedAt: string | null;
+  lastBuildMode: "full" | "selection" | null;
+  lastBuildAt: string | null;
+  finalStatus: "in-progress" | "complete";
+};
+
+export type ResumeBranchStatus = {
+  kind: string;
+  label: string;
+  reason: string;
+  recommendedAction: string;
+  needsDecision: boolean;
+};
+
+export type WorkspaceBootstrapStatus = {
+  rootPath: string;
+  rootName: string;
+  workspaceKind: string;
+  workspaceSummary: string;
+  fileCount: number;
+  ignoredDirectoryCount: number;
+  ignoredDirectories: string[];
+  symlinkEntryCount: number;
+  symlinkEntries: string[];
+  hasHarness: boolean;
+  projectMarkers: string[];
+  entryFiles: string[];
+  warnings: string[];
+  resume: {
+    hasManifest: boolean;
+    manifest: WorkspaceManifest | null;
+    hasHarness: boolean;
+    hasDiagram: boolean;
+    hasWorkflowState: boolean;
+    hasStepHistory: boolean;
+    hasResumeState: boolean;
+    hasCodeSignals: boolean;
+    codeSignalCount: number;
+    codeSignalFiles: string[];
+    graphHash: string | null;
+    graphHashMatches: boolean | null;
+    hasWorkflowBuildEvidence: boolean;
+    resumeDecision: {
+      decisionKind: string | null;
+      branchKind: string | null;
+      decidedAt: string | null;
+    } | null;
+    resumeBranch: ResumeBranchStatus;
+    internalBranch: ResumeBranchStatus;
+  };
+};
+
+export type NativeWorkspaceResponse = {
+  ok: boolean;
+  rootPath?: string;
+  rootName?: string;
+  files?: NativeWorkspaceEntry[];
+  bootstrap?: WorkspaceBootstrapStatus;
   error?: string;
 };
 

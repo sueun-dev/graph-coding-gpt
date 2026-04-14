@@ -1,4 +1,4 @@
-import type { HarnessArtifact, WorkspaceFile, WorkspaceTreeNode } from "./types";
+import type { NativeWorkspaceEntry, WorkspaceFile, WorkspaceTreeNode } from "./types";
 
 const SORTER = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const TEXT_EXTENSIONS = new Set([
@@ -36,10 +36,34 @@ type MapFileOptions = {
   rootPath?: string;
 };
 
-type NativeWorkspaceEntry = {
-  path: string;
-  size: number;
-  type: string;
+const IGNORED_DIRECTORY_NAMES = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".pnpm-store",
+  "coverage",
+  ".idea",
+  ".vscode-test",
+]);
+
+const IGNORED_FILE_NAMES = new Set([".DS_Store", "Thumbs.db"]);
+
+const shouldIgnoreRelativePath = (relativePath: string) => {
+  const parts = relativePath.split("/").filter(Boolean);
+  if (parts.length === 0) {
+    return false;
+  }
+
+  const fileName = parts[parts.length - 1];
+  if (IGNORED_FILE_NAMES.has(fileName)) {
+    return true;
+  }
+
+  return parts.slice(0, -1).some((part) => IGNORED_DIRECTORY_NAMES.has(part));
 };
 
 const mapFile = (file: File, path: string, options: MapFileOptions = {}): WorkspaceFile => ({
@@ -54,41 +78,13 @@ const mapFile = (file: File, path: string, options: MapFileOptions = {}): Worksp
   rootPath: options.rootPath,
 });
 
-const createVirtualFile = (path: string, content: string, type = "application/json") =>
-  mapFile(new File([content], path.split("/")[path.split("/").length - 1] ?? path, { type }), path);
-
-export const createWorkspaceFilesFromFileList = (fileList: FileList | File[]) => {
-  const files = Array.from(fileList);
-  if (files.length === 0) {
-    return {
-      rootName: "NO FOLDER OPENED",
-      files: [] as WorkspaceFile[],
-    };
-  }
-
-  const firstPath = ((files[0] as File & { webkitRelativePath?: string }).webkitRelativePath || files[0].name).split("/");
-  const rootName = firstPath.length > 1 ? firstPath[0] : "workspace";
-
-  const mapped = files
-    .map((file) => {
-      const relative = ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
-        .split("/")
-        .slice(firstPath.length > 1 ? 1 : 0)
-        .join("/");
-
-      return mapFile(file, relative || file.name);
-    })
-    .sort((left, right) => SORTER.compare(left.path, right.path));
-
-  return { rootName, files: mapped };
-};
-
 export const createWorkspaceFilesFromNativeListing = (
   rootPath: string,
   entries: NativeWorkspaceEntry[],
 ) => {
   const rootName = rootPath.split("/").filter(Boolean).pop() ?? "workspace";
   const files = entries
+    .filter((entry) => !shouldIgnoreRelativePath(entry.path))
     .map((entry) =>
       mapFile(new File([], entry.path.split("/").pop() ?? entry.path, { type: entry.type }), entry.path, {
         size: entry.size,
@@ -100,90 +96,6 @@ export const createWorkspaceFilesFromNativeListing = (
     .sort((left, right) => SORTER.compare(left.path, right.path));
 
   return { rootName, files };
-};
-
-export const createWorkspaceFilesFromDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
-  const files: WorkspaceFile[] = [];
-
-  const visit = async (directory: FileSystemDirectoryHandle, prefix: string[] = []) => {
-    const entries = (directory as FileSystemDirectoryHandle & {
-      entries(): AsyncIterable<[string, FileSystemHandle]>;
-    }).entries();
-
-    for await (const [, entry] of entries) {
-      if (entry.kind === "directory") {
-        await visit(entry as FileSystemDirectoryHandle, [...prefix, entry.name]);
-        continue;
-      }
-
-      const file = await (entry as FileSystemFileHandle).getFile();
-      const relativePath = [...prefix, entry.name].join("/");
-      files.push(mapFile(file, relativePath));
-    }
-  };
-
-  await visit(handle);
-  files.sort((left, right) => SORTER.compare(left.path, right.path));
-  return { rootName: handle.name, files };
-};
-
-export const mergeWorkspaceArtifacts = (existingFiles: WorkspaceFile[], artifacts: HarnessArtifact[]) => {
-  const generated = artifacts.map((artifact) =>
-    createVirtualFile(
-      artifact.path,
-      artifact.content,
-      artifact.path.endsWith(".md") ? "text/markdown" : artifact.path.endsWith(".json") ? "application/json" : "text/plain",
-    ),
-  );
-
-  const retained = existingFiles.filter(
-    (file) => !generated.some((generatedFile) => generatedFile.path === file.path),
-  );
-
-  return [...retained, ...generated].sort((left, right) => SORTER.compare(left.path, right.path));
-};
-
-export const writeArtifactsToDirectoryHandle = async (
-  rootHandle: FileSystemDirectoryHandle,
-  artifacts: HarnessArtifact[],
-) => {
-  for (const artifact of artifacts) {
-    const parts = artifact.path.split("/");
-    const fileName = parts.pop();
-    if (!fileName) {
-      continue;
-    }
-
-    let currentDirectory = rootHandle as FileSystemDirectoryHandle & {
-      getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<FileSystemDirectoryHandle>;
-      getFileHandle(name: string, options?: { create?: boolean }): Promise<FileSystemFileHandle>;
-    };
-
-    for (const part of parts) {
-      currentDirectory = (await currentDirectory.getDirectoryHandle(part, { create: true })) as typeof currentDirectory;
-    }
-
-    const fileHandle = await currentDirectory.getFileHandle(fileName, { create: true });
-    const writable = await fileHandle.createWritable();
-    await writable.write(artifact.content);
-    await writable.close();
-  }
-};
-
-export const downloadArtifacts = (artifacts: HarnessArtifact[]) => {
-  for (const artifact of artifacts) {
-    const blob = new Blob([artifact.content], {
-      type: artifact.path.endsWith(".json") ? "application/json" : artifact.path.endsWith(".md") ? "text/markdown" : "text/plain",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = artifact.path.split("/").join("__");
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-  }
 };
 
 export const buildWorkspaceTree = (files: WorkspaceFile[]): WorkspaceTreeNode[] => {

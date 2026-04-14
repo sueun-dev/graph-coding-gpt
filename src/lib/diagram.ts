@@ -212,6 +212,57 @@ export const createFlowFromBlueprint = (blueprint: DiagramBlueprint): { nodes: D
   return { nodes, edges };
 };
 
+export const createFlowFromDocument = (document: DiagramDocument): { nodes: DiagramNode[]; edges: DiagramEdge[] } => {
+  const selectedIds = new Set(document.scope?.mode === "selection" ? document.scope.nodeIds : []);
+
+  const nodes: DiagramNode[] = document.nodes.map((node, index) => {
+    const shape = normalizeShape(node.shape);
+    const base = defaultNodeData(shape);
+    const row = Math.floor(index / 4);
+    const col = index % 4;
+
+    return {
+      id: node.id,
+      type: "diagram",
+      position: node.position ?? { x: 80 + col * 280, y: 90 + row * 220 },
+      selected: selectedIds.has(node.id),
+      data: {
+        ...base,
+        title: node.title,
+        actor: node.actor,
+        intent: node.intent,
+        behavior: node.behavior,
+        inputs: node.inputs,
+        outputs: node.outputs,
+        notes: node.notes,
+        testHint: node.testHint,
+        status: normalizeStatus(node.status),
+      },
+    };
+  });
+
+  const edges: DiagramEdge[] = document.edges.map((edge) => {
+    const created = createEdge(edge.source, edge.target, edge.relation);
+    const lineStyle = normalizeLineStyle(edge.lineStyle);
+
+    return {
+      ...created,
+      id: edge.id,
+      type: lineStyle,
+      animated: edge.animated,
+      label: edge.relation,
+      data: {
+        relation: edge.relation,
+        notes: edge.notes,
+        lineStyle,
+        animated: edge.animated,
+      },
+    };
+  });
+
+  return { nodes, edges };
+};
+
 export const buildDiagramDocument = (
   nodes: DiagramNode[],
   edges: DiagramEdge[],

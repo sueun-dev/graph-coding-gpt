@@ -1,42 +1,23 @@
 import cors from "cors";
 import express from "express";
-import { promises as fs } from "fs";
+import { promises as fs, watch as fsWatch } from "fs";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
+import { ensureWithinRoot, readWorkspaceListing } from "./workspace-bootstrap.mjs";
+import { MISTAKE_RELATIVE_PATH, runWorkspaceBuildWithRecovery } from "./build-recovery.mjs";
+import {
+  CURRENT_STEP_CONTRACT_RELATIVE_PATH,
+  captureWorkspaceSnapshot,
+  verifySelectionBuildScope,
+  writeSelectionStepContract,
+} from "./build-verifier.mjs";
 
 const app = express();
-const PORT = 8787;
+const PORT = Number(process.env.PORT || 8787);
 const ROOT = process.cwd();
 const GENERATED_DIR = path.join(ROOT, "generated");
 const TMP_DIR = path.join(ROOT, ".tmp");
 const DIST_DIR = path.join(ROOT, "dist");
-const TEXT_EXTENSIONS = new Set([
-  "ts",
-  "tsx",
-  "js",
-  "jsx",
-  "json",
-  "md",
-  "txt",
-  "css",
-  "scss",
-  "html",
-  "xml",
-  "yml",
-  "yaml",
-  "toml",
-  "py",
-  "go",
-  "rs",
-  "java",
-  "kt",
-  "swift",
-  "dart",
-  "sql",
-  "sh",
-  "env",
-  "gitignore",
-]);
 
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
@@ -47,6 +28,8 @@ const SPEC_SCHEMA = {
   required: [
     "title",
     "overview",
+    "systemUnderstanding",
+    "scopeContract",
     "architecture",
     "executionPlan",
     "nodeSummaries",
@@ -55,10 +38,51 @@ const SPEC_SCHEMA = {
     "buildPrompt",
     "iterationPrompt",
     "assumptions",
+    "recommendations",
   ],
   properties: {
     title: { type: "string" },
     overview: { type: "string" },
+    systemUnderstanding: {
+      type: "object",
+      additionalProperties: false,
+      required: ["productGoal", "fullGraphSummary", "primaryFlow", "majorSubsystems", "coordinationRisks"],
+      properties: {
+        productGoal: { type: "string" },
+        fullGraphSummary: { type: "string" },
+        primaryFlow: { type: "array", items: { type: "string" } },
+        majorSubsystems: { type: "array", items: { type: "string" } },
+        coordinationRisks: { type: "array", items: { type: "string" } },
+      },
+    },
+    scopeContract: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "mode",
+        "selectedNodeIds",
+        "selectedNodeTitles",
+        "currentStepGoal",
+        "mustImplement",
+        "requiredBoundaries",
+        "outOfScope",
+        "implementationOrder",
+        "doneCriteria",
+        "testCriteria",
+      ],
+      properties: {
+        mode: { type: "string", enum: ["full", "selection"] },
+        selectedNodeIds: { type: "array", items: { type: "string" } },
+        selectedNodeTitles: { type: "array", items: { type: "string" } },
+        currentStepGoal: { type: "string" },
+        mustImplement: { type: "array", items: { type: "string" } },
+        requiredBoundaries: { type: "array", items: { type: "string" } },
+        outOfScope: { type: "array", items: { type: "string" } },
+        implementationOrder: { type: "array", items: { type: "string" } },
+        doneCriteria: { type: "array", items: { type: "string" } },
+        testCriteria: { type: "array", items: { type: "string" } },
+      },
+    },
     architecture: { type: "array", items: { type: "string" } },
     executionPlan: { type: "array", items: { type: "string" } },
     nodeSummaries: {
@@ -81,6 +105,20 @@ const SPEC_SCHEMA = {
     buildPrompt: { type: "string" },
     iterationPrompt: { type: "string" },
     assumptions: { type: "array", items: { type: "string" } },
+    recommendations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "rationale", "implementationHint", "impact"],
+        properties: {
+          title: { type: "string" },
+          rationale: { type: "string" },
+          implementationHint: { type: "string" },
+          impact: { type: "string", enum: ["low", "medium", "high"] },
+        },
+      },
+    },
   },
 };
 
@@ -144,90 +182,6 @@ const DIAGRAM_SCHEMA = {
 const ensureRuntimeDirs = async () => {
   await fs.mkdir(GENERATED_DIR, { recursive: true });
   await fs.mkdir(TMP_DIR, { recursive: true });
-};
-
-const isTextLikePath = (filePath) => {
-  const extension = filePath.includes(".") ? filePath.split(".").pop()?.toLowerCase() ?? "" : "";
-  return TEXT_EXTENSIONS.has(extension);
-};
-
-const guessMimeType = (filePath) => {
-  const extension = filePath.includes(".") ? filePath.split(".").pop()?.toLowerCase() ?? "" : "";
-
-  switch (extension) {
-    case "ts":
-    case "tsx":
-      return "application/typescript";
-    case "js":
-    case "jsx":
-      return "application/javascript";
-    case "json":
-      return "application/json";
-    case "md":
-      return "text/markdown";
-    case "css":
-      return "text/css";
-    case "html":
-      return "text/html";
-    case "yml":
-    case "yaml":
-      return "application/yaml";
-    case "svg":
-      return "image/svg+xml";
-    case "txt":
-    case "sh":
-    case "env":
-    case "gitignore":
-      return "text/plain";
-    default:
-      return isTextLikePath(filePath) ? "text/plain" : "application/octet-stream";
-  }
-};
-
-const ensureWithinRoot = (rootPath, relativePath) => {
-  const resolvedRoot = path.resolve(rootPath);
-  const resolvedFile = path.resolve(rootPath, relativePath);
-  const normalizedRoot = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
-
-  if (resolvedFile !== resolvedRoot && !resolvedFile.startsWith(normalizedRoot)) {
-    throw new Error(`Path escapes workspace root: ${relativePath}`);
-  }
-
-  return resolvedFile;
-};
-
-const readWorkspaceListing = async (rootPath) => {
-  const files = [];
-
-  const visit = async (currentDirectory, prefix = []) => {
-    const entries = await fs.readdir(currentDirectory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
-
-    for (const entry of entries) {
-      const absolutePath = path.join(currentDirectory, entry.name);
-      const relativePath = [...prefix, entry.name].join("/");
-
-      if (entry.isDirectory()) {
-        await visit(absolutePath, [...prefix, entry.name]);
-        continue;
-      }
-
-      const stat = await fs.stat(absolutePath);
-      files.push({
-        path: relativePath,
-        size: stat.size,
-        type: guessMimeType(relativePath),
-      });
-    }
-  };
-
-  await visit(rootPath);
-
-  return {
-    rootPath,
-    rootName: path.basename(rootPath),
-    files,
-  };
 };
 
 const chooseFolderViaDialog = () => {
@@ -306,6 +260,242 @@ const normalizeScope = (diagram, requestedMode) => {
 const compactText = (value = "") => value.replace(/\s+/g, " ").trim();
 const isKoreanText = (value = "") => /[가-힣]/.test(value);
 const containsAny = (text, keywords) => keywords.some((keyword) => text.includes(keyword));
+const uniqueCompactTexts = (values = []) => [...new Set(values.map((value) => compactText(value)).filter(Boolean))];
+
+const getScopedBuildContext = (diagram, scope) => {
+  const scopedNodes =
+    scope.mode === "selection"
+      ? diagram.nodes.filter((node) => scope.nodeIds.includes(node.id))
+      : diagram.nodes;
+  const scopedIds = new Set(scopedNodes.map((node) => node.id));
+  const internalEdges =
+    scope.mode === "selection"
+      ? diagram.edges.filter((edge) => scopedIds.has(edge.source) && scopedIds.has(edge.target))
+      : diagram.edges;
+  const boundaryEdges =
+    scope.mode === "selection"
+      ? diagram.edges.filter((edge) => scopedIds.has(edge.source) !== scopedIds.has(edge.target))
+      : [];
+  const boundaryNodeIds = new Set(
+    boundaryEdges.flatMap((edge) => [edge.source, edge.target]).filter((nodeId) => !scopedIds.has(nodeId)),
+  );
+  const boundaryNodes =
+    scope.mode === "selection"
+      ? diagram.nodes.filter((node) => boundaryNodeIds.has(node.id))
+      : [];
+  const outOfScopeNodes =
+    scope.mode === "selection"
+      ? diagram.nodes.filter((node) => !scopedIds.has(node.id) && !boundaryNodeIds.has(node.id))
+      : [];
+
+  return {
+    scopedNodes,
+    scopedIds,
+    internalEdges,
+    boundaryEdges,
+    boundaryNodeIds,
+    boundaryNodes,
+    outOfScopeNodes,
+  };
+};
+
+const stringifyNodeContract = (node) =>
+  compactText(`${node.title}: ${compactText([node.intent, node.behavior].filter(Boolean).join(" / "))}`);
+
+const stringifyBoundaryContract = (node) =>
+  compactText(`${node.title}: ${node.intent || node.behavior || "minimal contract boundary"}`);
+
+const createSelectionExecutionPlan = () => [
+  "전체 그래프를 먼저 읽고 선택 노드가 전체 제품에서 맡는 역할을 한 문장으로 고정한다.",
+  "선택 노드의 title, intent, behavior만 현재 단계의 필수 구현으로 잠근다.",
+  "필수 경계는 contract, adapter, stub 수준으로만 연결하고 바깥 기능은 구현하지 않는다.",
+  "선택 범위를 넘는 UI, 데이터, 워커, 외부 연동은 만들지 않고 현재 단계가 끝나는 지점에서 멈춘다.",
+];
+
+const createSelectionTestPlan = () => [
+  "선택 노드의 testHint를 우선 검증한다.",
+  "현재 단계에 필요한 최소 typecheck, build, unit 검증만 수행한다.",
+  "범위 밖 기능은 stub/interface 경계만 검증하고, E2E나 무거운 통합 검증은 다음 단계로 미룬다.",
+];
+
+const buildStrictSelectionIterationPrompt = ({ scopedNodes, boundaryNodes, outOfScopeNodes }) => {
+  const allStartEnd = scopedNodes.length > 0 && scopedNodes.every((node) => node.shape === "startEnd");
+  const selectedNodeLines = scopedNodes.map((node) =>
+    `- [${node.shape}] ${node.title}: ${compactText([node.intent, node.behavior].filter(Boolean).join(" / "))}`,
+  );
+  const boundaryLines =
+    boundaryNodes.length > 0
+      ? boundaryNodes.map((node) => `- ${node.title}: contract/stub only (${node.intent || node.behavior})`)
+      : ["- none"];
+  const outOfScopeLines =
+    outOfScopeNodes.length > 0
+      ? outOfScopeNodes.map((node) => `- ${node.title}: do not implement in this step`)
+      : ["- none"];
+  const doneCriteria = scopedNodes.map(
+    (node) => `- ${node.title}: ${node.behavior} 수준까지만 동작하고 범위 밖 기능은 contract/stub로 남아 있어야 한다.`,
+  );
+  const testCriteria = scopedNodes.map(
+    (node) => `- ${node.testHint || `${node.title}의 정상 흐름과 실패 흐름을 검증한다.`}`,
+  );
+
+  return `
+Read the whole graph first so you understand how this step fits into the full product.
+
+Current step:
+${selectedNodeLines.join("\n") || "- none"}
+
+Allowed boundaries:
+${boundaryLines.join("\n")}
+
+Out of scope for this step:
+${outOfScopeLines.join("\n")}
+
+Hard implementation limits:
+- This is a narrow step build, not a mini full-app build.
+- Prefer touching no more than 6 files total and no more than 1 focused test file.
+- Required boundaries may be represented only as typed interfaces, adapters, or stub modules.
+- Do not build placeholder UI sections, seeded mock data panels, feature inventories, watchlists, market grids, settings screens, or management screens for out-of-scope nodes.
+- Do not implement any out-of-scope node, even as a partially working feature.
+- If the workspace is empty, bootstrap only the minimum runnable skeleton needed for this step.
+${allStartEnd ? "- The selected node is a start/end node. Build only the smallest launch surface needed to prove the app opens and the step begins. Do not prebuild the next screen's feature content unless the selected node text explicitly requires it." : ""}
+
+Done criteria:
+${doneCriteria.join("\n") || "- Current step works and out-of-scope features remain stubbed."}
+
+Test criteria:
+${testCriteria.join("\n") || "- Run only the narrowest validation needed for the current step."}
+`.trim();
+};
+
+const sanitizeSpecResponse = (spec, diagram, scope) => {
+  const { scopedNodes, boundaryNodes, outOfScopeNodes } = getScopedBuildContext(diagram, scope);
+  const selectedNodeIds = scopedNodes.map((node) => node.id);
+  const selectedNodeTitles = scopedNodes.map((node) => node.title);
+  const primaryFlowFallback = diagram.edges.map((edge) => {
+    const source = diagram.nodes.find((node) => node.id === edge.source)?.title ?? edge.source;
+    const target = diagram.nodes.find((node) => node.id === edge.target)?.title ?? edge.target;
+    return `${source} -> ${target}: ${edge.relation}`;
+  });
+  const majorSubsystemFallback = diagram.nodes.map((node) => `${node.title} (${node.shape})`);
+  const requiredBoundaries =
+    scope.mode === "selection"
+      ? boundaryNodes.map((node) => stringifyBoundaryContract(node))
+      : uniqueCompactTexts(spec.scopeContract?.requiredBoundaries ?? []);
+  const requiredBoundaryTitles = new Set(boundaryNodes.map((node) => node.title));
+  const outOfScope =
+    scope.mode === "selection"
+      ? outOfScopeNodes.map((node) => stringifyBoundaryContract(node))
+      : uniqueCompactTexts(spec.scopeContract?.outOfScope ?? []);
+  const sanitizedRecommendations =
+    scope.mode === "selection"
+      ? (Array.isArray(spec.recommendations) ? spec.recommendations : []).filter((item) => {
+          const title = compactText(item?.title ?? "");
+          return (
+            title &&
+            !selectedNodeTitles.some((selected) => title.includes(selected)) &&
+            ![...requiredBoundaryTitles].some((boundaryTitle) => title.includes(boundaryTitle))
+          );
+        })
+      : Array.isArray(spec.recommendations)
+        ? spec.recommendations
+        : [];
+
+  return {
+    ...spec,
+    systemUnderstanding: {
+      productGoal: compactText(spec.systemUnderstanding?.productGoal || diagram.summary || diagram.title),
+      fullGraphSummary:
+        compactText(spec.systemUnderstanding?.fullGraphSummary) ||
+        `${diagram.nodes.length}개 노드와 ${diagram.edges.length}개 방향선을 가진 그래프이며, 선택 구현 전에도 전체 흐름을 먼저 해석해야 한다.`,
+      primaryFlow: uniqueCompactTexts(spec.systemUnderstanding?.primaryFlow?.length ? spec.systemUnderstanding.primaryFlow : primaryFlowFallback),
+      majorSubsystems: uniqueCompactTexts(
+        spec.systemUnderstanding?.majorSubsystems?.length ? spec.systemUnderstanding.majorSubsystems : majorSubsystemFallback,
+      ),
+      coordinationRisks:
+        scope.mode === "selection"
+          ? [
+              "선택 노드 외 기능을 현재 단계에 섞어 구현하면 범위가 무너진다.",
+              "필수 경계와 구현 금지 범위를 서로 겹치게 두면 build가 흔들린다.",
+              "필수 경계는 contract/stub까지만 구현해야 한다.",
+            ]
+          : uniqueCompactTexts(spec.systemUnderstanding?.coordinationRisks ?? []),
+    },
+    scopeContract: {
+      mode: scope.mode,
+      selectedNodeIds,
+      selectedNodeTitles,
+      currentStepGoal:
+        scope.mode === "selection"
+          ? `${selectedNodeTitles.join(", ")} 노드의 intent와 behavior만 현재 단계로 구현한다.`
+          : compactText(spec.scopeContract?.currentStepGoal || "전체 그래프를 따라 앱 전체 구조를 구현한다."),
+      mustImplement:
+        scope.mode === "selection"
+          ? scopedNodes.map((node) => stringifyNodeContract(node))
+          : uniqueCompactTexts(spec.scopeContract?.mustImplement ?? []),
+      requiredBoundaries: uniqueCompactTexts(requiredBoundaries),
+      outOfScope: uniqueCompactTexts(
+        outOfScope.filter((item) => !requiredBoundaries.some((boundary) => item.startsWith(`${boundary.split(":")[0]}:`))),
+      ),
+      implementationOrder:
+        scope.mode === "selection"
+          ? scopedNodes.map((node, index) => `${index + 1}. ${node.title} 구현`)
+          : uniqueCompactTexts(spec.scopeContract?.implementationOrder ?? []),
+      doneCriteria:
+        scope.mode === "selection"
+          ? scopedNodes.map((node) => `${node.title}의 behavior가 동작하고 scope 밖 기능은 contract/stub로 남아 있다.`)
+          : uniqueCompactTexts(spec.scopeContract?.doneCriteria ?? []),
+      testCriteria:
+        scope.mode === "selection"
+          ? scopedNodes.map((node) => node.testHint || `${node.title}의 정상 흐름과 실패 흐름을 검증한다.`)
+          : uniqueCompactTexts(spec.scopeContract?.testCriteria ?? []),
+    },
+    architecture:
+      scope.mode === "selection"
+        ? scopedNodes.map((node) => `${node.title}: ${node.actor}가 ${node.intent}를 위해 ${node.behavior}를 수행`)
+        : uniqueCompactTexts(spec.architecture ?? []),
+    executionPlan:
+      scope.mode === "selection"
+        ? createSelectionExecutionPlan()
+        : uniqueCompactTexts(spec.executionPlan ?? []),
+    nodeSummaries:
+      scope.mode === "selection"
+        ? scopedNodes.map((node) => ({
+            nodeId: node.id,
+            role: node.shape,
+            summary: node.behavior,
+            implementationHint: `${node.title}만 구현하고 바깥 기능은 contract/stub로 남긴다.`,
+            testHint: node.testHint || `${node.title}의 정상 흐름과 실패 흐름을 검증한다.`,
+          }))
+        : Array.isArray(spec.nodeSummaries)
+          ? spec.nodeSummaries
+          : [],
+    filePlan:
+      scope.mode === "selection"
+        ? [
+            "현재 단계에 필요한 엔트리 파일만 수정한다.",
+            "필수 경계마다 contract 또는 stub 파일을 최대 1개만 둔다.",
+            "선택 단계 검증용 테스트 파일은 최대 1개만 추가한다.",
+            "out-of-scope 기능을 위한 화면, 목록, 패널, 더미 데이터 파일은 만들지 않는다.",
+          ]
+        : uniqueCompactTexts(spec.filePlan ?? []),
+    testPlan:
+      scope.mode === "selection"
+        ? createSelectionTestPlan()
+        : uniqueCompactTexts(spec.testPlan ?? []),
+    buildPrompt: compactText(spec.buildPrompt || ""),
+    iterationPrompt:
+      scope.mode === "selection"
+        ? buildStrictSelectionIterationPrompt({ scopedNodes, boundaryNodes, outOfScopeNodes })
+        : compactText(spec.iterationPrompt || ""),
+    assumptions: uniqueCompactTexts(spec.assumptions ?? []),
+    recommendations:
+      scope.mode === "selection"
+        ? sanitizedRecommendations
+        : Array.isArray(spec.recommendations)
+          ? spec.recommendations
+          : [],
+  };
+};
 
 const detectExchangeName = (brief, korean) => {
   if (containsAny(brief, ["빗썸", "bithumb"])) {
@@ -370,10 +560,10 @@ const sanitizeLaunchNode = (node, brief, korean) => {
       ...node,
       title: korean ? "앱 실행" : "Launch Tracker",
       intent: korean ? `${exchangeName} 코인 가격 추적을 시작한다` : `Start tracking ${exchangeName} coin prices`,
-      behavior: korean ? "데스크톱 앱을 열고 실시간 시세 대시보드를 표시한다" : "Open the desktop app and show the live price dashboard",
+      behavior: korean ? "데스크톱 앱을 열고 가격 추적 시작 상태를 표시한다" : "Open the desktop app and show the initial tracking start state",
       inputs: korean ? "앱 실행 이벤트" : "app launch event",
-      outputs: korean ? "초기 대시보드 표시 요청" : "initial dashboard render request",
-      testHint: korean ? "앱 실행 후 기본 대시보드가 정상적으로 열리는지 확인한다" : "Verify the dashboard opens after launch",
+      outputs: korean ? "초기 실행 상태 표시 요청" : "initial launch-state render request",
+      testHint: korean ? "앱 실행 후 시작 화면이 열리고 추적 준비 상태가 보이는지 확인한다" : "Verify the app opens and shows the initial tracking-ready state",
     };
   }
 
@@ -1012,7 +1202,49 @@ const buildGenericFallback = (brief, harness, errorMessage = "") => {
   };
 };
 
-const buildPromptFromBrief = (brief, diagram, harness, strategy) => `
+const buildPromptFromBrief = (brief, diagram, harness, strategy, intakeContext = null) => {
+  if (intakeContext && Array.isArray(intakeContext.representativeFiles) && intakeContext.representativeFiles.length > 0) {
+    return `
+You are a staff engineer specializing in reverse-engineering existing codebases into programming diagrams.
+
+Task:
+- Read the user's brief.
+- Read the workspace intake context and representative file excerpts.
+- Use the harness settings as hard constraints.
+- Return a concrete, implementation-oriented full diagram as valid JSON.
+
+Rules:
+- Use only the allowed shape values from the schema.
+- Prefer 4 to 10 nodes unless the intake clearly demands more.
+- Preserve actual framework markers, runtime boundaries, file/module names, and domain nouns from the intake context.
+- Infer the current system from the code excerpts first, then layer the user's brief on top.
+- If the code excerpts are thin, stay concrete but conservative. Do not invent large subsystems that are unsupported by the intake context.
+- Do not promote inferred auth, profile locking, export, notifications, or offline behavior into mandatory nodes unless the brief clearly asks for them.
+- If you want to recommend useful extras, use note nodes whose title starts with "추천:".
+- Keep the first start/end node limited to the user's explicit entry action.
+- Directed edges must represent real execution flow, dependency flow, or data flow.
+- Fill actor, intent, behavior, inputs, outputs, notes, and testHint with useful detail.
+- If strategy is "augment", revise and extend the current diagram into a better full diagram. Do not return a patch.
+- If strategy is "replace", generate a fresh full diagram and only use the current diagram as loose context.
+
+Strategy:
+${strategy}
+
+Harness:
+${JSON.stringify(harness ?? null, null, 2)}
+
+Workspace intake context:
+${JSON.stringify(intakeContext, null, 2)}
+
+Current diagram context:
+${JSON.stringify(diagram ?? null, null, 2)}
+
+User brief:
+${brief}
+`.trim();
+  }
+
+  return `
 You are a staff product architect specializing in turning rough app ideas into programming diagrams.
 
 Task:
@@ -1052,71 +1284,69 @@ ${JSON.stringify(diagram ?? null, null, 2)}
 User brief:
 ${brief}
 `.trim();
+};
 
 const buildPromptFromDiagram = (diagram, scope) => {
-  const scopedNodes =
+  const { scopedNodes, scopedIds, internalEdges, boundaryEdges, boundaryNodes, outOfScopeNodes } = getScopedBuildContext(diagram, scope);
+  const boundaryNodeSummaries =
     scope.mode === "selection"
-      ? diagram.nodes.filter((node) => scope.nodeIds.includes(node.id))
-      : diagram.nodes;
-
-  const scopedIds = new Set(scopedNodes.map((node) => node.id));
-  const internalEdges =
-    scope.mode === "selection"
-      ? diagram.edges.filter((edge) => scopedIds.has(edge.source) && scopedIds.has(edge.target))
-      : diagram.edges;
-  const boundaryEdges =
-    scope.mode === "selection"
-      ? diagram.edges.filter((edge) => scopedIds.has(edge.source) !== scopedIds.has(edge.target))
+      ? boundaryNodes.map((node) => ({
+          id: node.id,
+          shape: node.shape,
+          title: node.title,
+          actor: node.actor,
+          intent: node.intent,
+        }))
       : [];
-  const boundaryNodeIds = new Set(
-    boundaryEdges.flatMap((edge) => [edge.source, edge.target]).filter((nodeId) => !scopedIds.has(nodeId)),
-  );
-  const boundaryNodes =
-    scope.mode === "selection"
-      ? diagram.nodes
-          .filter((node) => boundaryNodeIds.has(node.id))
-          .map((node) => ({
-            id: node.id,
-            shape: node.shape,
-            title: node.title,
-            actor: node.actor,
-            intent: node.intent,
-          }))
-      : [];
-  const contextBlock =
-    scope.mode === "selection"
-      ? `
-Boundary nodes outside the current scope:
-${JSON.stringify(boundaryNodes, null, 2)}
-
-Boundary edges crossing the current scope:
-${JSON.stringify(boundaryEdges, null, 2)}
-`.trim()
-      : `
-Full diagram for context:
-${JSON.stringify(diagram, null, 2)}
-`.trim();
+  const fullNodeSummary = diagram.nodes
+    .map((node) => `- [${node.shape}] ${node.title}: ${compactText(node.intent || node.behavior)}`)
+    .join("\n");
+  const fullEdgeSummary = diagram.edges
+    .map((edge) => {
+      const source = diagram.nodes.find((node) => node.id === edge.source)?.title ?? edge.source;
+      const target = diagram.nodes.find((node) => node.id === edge.target)?.title ?? edge.target;
+      return `- ${source} -> ${target}: ${compactText(edge.relation || edge.notes)}`;
+    })
+    .join("\n");
 
   return `
 You are a staff engineer and product architect.
 Transform the following programming diagram into a rigorous implementation specification.
 
 Rules:
+- Read the entire graph first, even when the requested mode is "selection".
 - Treat node shapes as semantic hints.
 - Directed edges define control flow, data flow, or dependency flow from source to target.
 - Use the text inside each node as primary product intent.
 - Produce a complete but execution-oriented answer.
+- Separate mandatory scope from optional ideas.
 - If the scope is partial, preserve the rest of the system using mocks, adapters, or interface boundaries.
-- If the scope is partial, optimize for the selected nodes first and use only boundary summaries for outside context.
+- If the scope is partial, optimize for the selected nodes first, but still derive them from the whole-graph meaning.
 - Favor implementation detail over abstract commentary.
 
 Output requirements:
 - Return only valid JSON matching the provided schema.
-- The buildPrompt must instruct a coding agent to build the selected system exactly from the diagram.
-- The iterationPrompt must instruct the coding agent to build only the current scope and leave the rest stubbed but testable.
+- "systemUnderstanding" must summarize the whole graph, not only the current selection.
+- "scopeContract" must describe exactly what is mandatory for this step.
+- "recommendations" must contain only optional follow-up ideas. They must never be mixed into "scopeContract.mustImplement".
+- If the scope is partial, "scopeContract.currentStepGoal" must map directly to the selected node titles, intent, and behavior.
+- If the scope is partial, "scopeContract.mustImplement" must stay narrowly tied to the selected nodes. Do not expand one selected node into a mini-app.
+- If the scope is partial, "scopeContract.requiredBoundaries" and "scopeContract.outOfScope" must be disjoint.
+- If the scope is partial, boundary nodes are allowed only as minimal contracts or stubs. They must not be treated as independently implemented features in this step.
+- If the scope is partial, "scopeContract.outOfScope" must explicitly list major capabilities outside the current step.
+- "executionPlan" and "iterationPrompt" must follow "scopeContract" step by step.
+- The "buildPrompt" may describe the whole system, but the "iterationPrompt" must instruct a coding agent to implement only "scopeContract.mustImplement" plus the smallest required boundaries.
+- The "iterationPrompt" must explicitly forbid implementing "scopeContract.outOfScope" and "recommendations" unless the selected nodes already require them.
+- If the selected node is a start/end node, keep the current step minimal. Opening the app is enough unless the selected node text explicitly requires the next screen's real feature content.
 
 Scope:
 ${JSON.stringify(scope, null, 2)}
+
+Full graph node summary:
+${fullNodeSummary || "- none"}
+
+Full graph edge summary:
+${fullEdgeSummary || "- none"}
 
 Scoped nodes:
 ${JSON.stringify(scopedNodes, null, 2)}
@@ -1124,15 +1354,36 @@ ${JSON.stringify(scopedNodes, null, 2)}
 Scoped internal edges:
 ${JSON.stringify(internalEdges, null, 2)}
 
-${contextBlock}
+Boundary nodes outside the current scope:
+${JSON.stringify(boundaryNodeSummaries, null, 2)}
+
+Boundary edges crossing the current scope:
+${JSON.stringify(boundaryEdges, null, 2)}
+
+Out-of-scope nodes:
+${JSON.stringify(
+  outOfScopeNodes.map((node) => ({
+    id: node.id,
+    title: node.title,
+    shape: node.shape,
+    intent: node.intent,
+  })),
+  null,
+  2,
+)}
+
+Full diagram for context:
+${JSON.stringify(diagram, null, 2)}
 `.trim();
 };
 
 const fallbackSpec = (diagram, scope, errorMessage = "") => {
-  const scopedNodes =
+  const { scopedNodes, boundaryNodes, outOfScopeNodes } = getScopedBuildContext(diagram, scope);
+  const selectedTitles = scopedNodes.map((node) => node.title);
+  const currentStepGoal =
     scope.mode === "selection"
-      ? diagram.nodes.filter((node) => scope.nodeIds.includes(node.id))
-      : diagram.nodes;
+      ? `${selectedTitles.join(", ")} 노드의 intent와 behavior만 현재 단계로 구현한다.`
+      : "전체 그래프를 따라 앱 전체 구조를 구현한다.";
 
   return {
     title: scope.mode === "selection" ? "Selected Graph Slice Specification" : "Full Graph System Specification",
@@ -1140,15 +1391,47 @@ const fallbackSpec = (diagram, scope, errorMessage = "") => {
       scope.mode === "selection"
         ? "선택된 노드만 우선 구현하고 나머지는 인터페이스와 스텁으로 유지하는 부분 구현 명세입니다."
         : "전체 도식화를 앱 구조로 바꾸는 초기 명세입니다.",
+    systemUnderstanding: {
+      productGoal: diagram.summary || diagram.title,
+      fullGraphSummary: `${diagram.nodes.length}개 노드와 ${diagram.edges.length}개 방향선을 가진 그래프이며, 선택 구현 전에도 전체 흐름을 먼저 해석해야 한다.`,
+      primaryFlow: diagram.edges.map((edge) => {
+        const source = diagram.nodes.find((node) => node.id === edge.source)?.title ?? edge.source;
+        const target = diagram.nodes.find((node) => node.id === edge.target)?.title ?? edge.target;
+        return `${source} -> ${target}: ${edge.relation}`;
+      }),
+      majorSubsystems: diagram.nodes.map((node) => `${node.title} (${node.shape})`),
+      coordinationRisks:
+        scope.mode === "selection"
+          ? [
+              "선택 노드 외 기능을 현재 단계에 섞어 구현하면 범위가 무너진다.",
+              "선택 노드를 성립시키는 최소 경계만 구현하고 나머지는 스텁으로 남겨야 한다.",
+            ]
+          : ["전체 그래프의 의존 관계와 데이터 흐름이 일관되게 연결되어야 한다."],
+    },
+    scopeContract: {
+      mode: scope.mode,
+      selectedNodeIds: scopedNodes.map((node) => node.id),
+      selectedNodeTitles: selectedTitles,
+      currentStepGoal,
+      mustImplement: scopedNodes.map((node) => `${node.title}: ${node.intent} / ${node.behavior}`),
+      requiredBoundaries: boundaryNodes.map((node) => stringifyBoundaryContract(node)),
+      outOfScope: outOfScopeNodes.map((node) => stringifyBoundaryContract(node)),
+      implementationOrder: scopedNodes.map((node, index) => `${index + 1}. ${node.title} 구현`),
+      doneCriteria: scopedNodes.map((node) => `${node.title}의 behavior가 동작하고 scope 밖 기능은 stub/interface로 남아 있다.`),
+      testCriteria: scopedNodes.map((node) => node.testHint || `${node.title}의 정상 흐름과 실패 흐름을 검증한다.`),
+    },
     architecture: scopedNodes.map(
       (node) => `${node.title}: ${node.actor}가 ${node.intent}를 위해 ${node.behavior}를 수행`,
     ),
-    executionPlan: [
-      "도식화의 노드 텍스트를 기준으로 화면, 서비스, API, 저장소 책임을 분리한다.",
-      "방향성 선을 따라 의존 관계와 데이터 흐름을 코드 구조로 내린다.",
-      "현재 범위 밖의 기능은 mock 또는 stub로 고정하고 테스트 가능한 경계를 만든다.",
-      "핵심 사용자 흐름부터 구현하고 연결 테스트를 작성한다.",
-    ],
+    executionPlan:
+      scope.mode === "selection"
+        ? createSelectionExecutionPlan()
+        : [
+            "전체 그래프를 읽고 주요 사용자 흐름과 의존 관계를 고정한다.",
+            "핵심 화면, 서비스, 저장소, 외부 연동을 파일 구조와 모듈 경계로 나눈다.",
+            "노드와 방향선 순서대로 구현하고 각 경계를 타입과 테스트로 검증한다.",
+            "최종적으로 전체 그래프가 연결된 상태에서 build/typecheck/test를 통과시킨다.",
+          ],
     nodeSummaries: scopedNodes.map((node) => ({
       nodeId: node.id,
       role: node.shape,
@@ -1156,24 +1439,44 @@ const fallbackSpec = (diagram, scope, errorMessage = "") => {
       implementationHint: `${node.title} 모듈을 만들고 "${node.intent}" 목적에 맞는 인터페이스를 정의한다.`,
       testHint: node.testHint || `${node.title}의 정상 흐름과 실패 흐름을 검증한다.`,
     })),
-    filePlan: [
-      "src/app-shell/*",
-      "src/features/*",
-      "src/services/*",
-      "src/state/*",
-      "tests/*",
-    ],
-    testPlan: [
-      "선택된 노드 경로를 따라 통합 테스트를 작성한다.",
-      "분기 노드는 조건별 결과를 검증한다.",
-      "현재 범위 밖 노드는 스텁 연결만 검증한다.",
-    ],
+    filePlan:
+      scope.mode === "selection"
+        ? [
+            "현재 단계에 필요한 엔트리 파일만 수정한다.",
+            "필수 경계마다 contract 또는 stub 파일을 최대 1개만 둔다.",
+            "선택 단계 검증용 테스트 파일은 최대 1개만 추가한다.",
+            "out-of-scope 기능을 위한 화면, 목록, 패널, 더미 데이터 파일은 만들지 않는다.",
+          ]
+        : ["src/app-shell/*", "src/features/*", "src/services/*", "src/state/*", "tests/*"],
+    testPlan:
+      scope.mode === "selection"
+        ? createSelectionTestPlan()
+        : [
+            "핵심 플로우에 대한 build/typecheck/unit 검증을 수행한다.",
+            "주요 경계와 데이터 흐름이 노드 연결과 일치하는지 검증한다.",
+            "전체 그래프 기준의 통합 검증이 가능한 상태로 마무리한다.",
+          ],
     buildPrompt: `Build the ${
       scope.mode === "selection" ? "selected portion" : "full system"
     } from this programming diagram. Respect every node's title, actor, intent, behavior, inputs, outputs, notes, and test hints. Use directed edges as dependency and flow order. Return a working, testable app skeleton with clear file structure and verification steps.`,
     iterationPrompt:
-      "Implement only the currently selected scope. Anything outside the selected scope must remain mocked or stubbed, but all boundaries must compile and the selected flow must be testable end-to-end.",
+      scope.mode === "selection"
+        ? buildStrictSelectionIterationPrompt({ scopedNodes, boundaryNodes, outOfScopeNodes })
+        : `Read the whole graph first, then implement only the current step: ${currentStepGoal} Must implement: ${
+            scopedNodes.map((node) => `${node.title}: ${node.behavior}`).join("; ") || "none"
+          }. Required boundaries: ${boundaryNodes.map((node) => node.title).join(", ") || "none"}. Do not implement out-of-scope capabilities: ${
+            outOfScopeNodes.map((node) => node.title).join(", ") || "none"
+          }. Keep everything outside the current step stubbed but compiling. Finish only after the current step's done criteria and test criteria pass.`,
     assumptions: errorMessage ? [`Codex fallback used because: ${errorMessage}`] : ["Prototype fallback mode used."],
+    recommendations:
+      scope.mode === "selection"
+        ? outOfScopeNodes.slice(0, 4).map((node) => ({
+            title: `${node.title} later`,
+            rationale: `${node.title}는 현재 선택 범위 밖이지만 전체 그래프에서는 후속 단계로 중요하다.`,
+            implementationHint: `${node.title} 관련 기능은 다음 selection에서 contract로 확정한 뒤 구현한다.`,
+            impact: "medium",
+          }))
+        : [],
   };
 };
 
@@ -1327,7 +1630,16 @@ Rules:
 - Modify files directly in this workspace. Do not create an extra nested project root.
 - Respect the harness as an environment and quality policy, not as a license to invent new product features.
 - If the mode is "selection", implement only the selected scope. Leave outside boundaries stubbed but compiling and testable.
-- Run validation commands when feasible for this stack and summarize what changed.
+- Treat any recommendation or optional follow-up idea as out of scope unless the implementation task explicitly marks it as mandatory.
+- Prefer the smallest correct slice over exhaustive polish.
+- If the mode is "selection", stay within a tiny edit budget. Prefer 3 to 6 touched files total and at most 1 focused test file.
+- If the mode is "selection", required boundaries mean contract/stub only. They do not authorize implementing that boundary's downstream behavior.
+- If the mode is "selection", do not create placeholder UI panels, seeded mock data cards, feature inventories, or management screens for out-of-scope nodes.
+- If the mode is "selection", a start/end node should normally produce only the smallest launch surface needed to prove the app opens and the current step begins.
+- If dependencies are missing, install them once using the workspace package manager.
+- Run only lightweight validation by default. Prefer build, typecheck, and unit tests.
+- Do not run browser or E2E validation unless the workspace already has a working setup and the current scope directly depends on it.
+- The server may call you again with ${MISTAKE_RELATIVE_PATH} after a failed validation pass. Each repair pass must fix only the recorded mistakes without widening scope.
 - End with a concise summary of changed files and verification status.
 
 Mode:
@@ -1362,17 +1674,24 @@ const runCodexWorkspaceBuild = async ({ prompt, cwd, mode, timeoutMs = 900000 })
     "-",
   ];
 
-  const output = await new Promise((resolve, reject) => {
+  let stdout = "";
+  let stderr = "";
+
+  try {
+    const output = await new Promise((resolve, reject) => {
     const child = spawn("codex", args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
 
-    let stdout = "";
-    let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!child.killed) {
+          child.kill("SIGKILL");
+        }
+      }, 3000);
       reject(new Error(`Codex build timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
     }, timeoutMs);
 
@@ -1408,12 +1727,26 @@ const runCodexWorkspaceBuild = async ({ prompt, cwd, mode, timeoutMs = 900000 })
     child.stdin.end();
   });
 
-  await fs.writeFile(logPath, typeof output === "string" ? output : String(output));
-  return {
-    output: typeof output === "string" ? output : String(output),
-    promptPath,
-    logPath,
-  };
+    await fs.writeFile(logPath, typeof output === "string" ? output : String(output));
+    return {
+      output: typeof output === "string" ? output : String(output),
+      promptPath,
+      logPath,
+    };
+  } catch (error) {
+    const partialOutput =
+      [stdout.trim(), stderr.trim() ? `\n[stderr]\n${stderr.trim()}` : ""]
+        .filter(Boolean)
+        .join("\n")
+        .trim() || "[no output captured before failure]";
+
+    await fs.writeFile(logPath, partialOutput);
+    throw Object.assign(error instanceof Error ? error : new Error("Codex build failed."), {
+      promptPath,
+      logPath,
+      partialOutput,
+    });
+  }
 };
 
 app.get("/api/health", (_req, res) => {
@@ -1424,10 +1757,10 @@ app.get("/api/auth/status", (_req, res) => {
   res.json(codexStatus());
 });
 
-app.post("/api/workspace/open-folder", async (req, res) => {
+app.post("/api/workspace/open-folder", async (_req, res) => {
   try {
-    const requestedPath = typeof req.body?.path === "string" && req.body.path ? path.resolve(req.body.path) : chooseFolderViaDialog();
-    const workspace = await readWorkspaceListing(requestedPath);
+    const selectedPath = chooseFolderViaDialog();
+    const workspace = await readWorkspaceListing(selectedPath);
     res.json({
       ok: true,
       ...workspace,
@@ -1439,6 +1772,138 @@ app.post("/api/workspace/open-folder", async (req, res) => {
       error: message,
     });
   }
+});
+
+app.post("/api/workspace/reload", async (req, res) => {
+  try {
+    const rootPath = typeof req.body?.rootPath === "string" ? path.resolve(req.body.rootPath) : "";
+
+    if (!rootPath) {
+      res.status(400).json({ ok: false, error: "rootPath is required." });
+      return;
+    }
+
+    const workspace = await readWorkspaceListing(rootPath);
+    res.json({
+      ok: true,
+      ...workspace,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to reload workspace.";
+    res.status(400).json({
+      ok: false,
+      error: message,
+    });
+  }
+});
+
+app.get("/api/workspace/watch", async (req, res) => {
+  const rootPath = typeof req.query?.rootPath === "string" ? path.resolve(req.query.rootPath) : "";
+
+  if (!rootPath) {
+    res.status(400).json({ ok: false, error: "rootPath is required." });
+    return;
+  }
+
+  try {
+    const stats = await fs.stat(rootPath);
+    if (!stats.isDirectory()) {
+      res.status(400).json({ ok: false, error: "Selected path is not a directory." });
+      return;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to watch workspace.";
+    res.status(400).json({ ok: false, error: message });
+    return;
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const watchers = [];
+  let closed = false;
+  let debounceTimer = null;
+
+  const writeEvent = (event, payload) => {
+    if (closed) {
+      return;
+    }
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const scheduleChange = (detail) => {
+    if (closed) {
+      return;
+    }
+
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+
+    debounceTimer = setTimeout(() => {
+      writeEvent("workspace-changed", {
+        rootPath,
+        detail,
+        changedAt: new Date().toISOString(),
+      });
+    }, 120);
+  };
+
+  const attachWatcher = (targetPath, options = {}) => {
+    try {
+      const watcher = fsWatch(targetPath, options, (_eventType, filename) => {
+        scheduleChange(filename ? `${targetPath}:${filename}` : targetPath);
+      });
+      watcher.on("error", (error) => {
+        writeEvent("workspace-watch-error", {
+          rootPath,
+          error: error instanceof Error ? error.message : "watch error",
+        });
+      });
+      watchers.push(watcher);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const recursiveSupported = process.platform === "darwin" || process.platform === "win32";
+  const recursiveAttached = attachWatcher(rootPath, recursiveSupported ? { recursive: true } : {});
+
+  if (!recursiveAttached) {
+    attachWatcher(rootPath);
+    try {
+      const graphcodingStats = await fs.stat(path.join(rootPath, ".graphcoding"));
+      if (graphcodingStats.isDirectory()) {
+        attachWatcher(path.join(rootPath, ".graphcoding"));
+      }
+    } catch {
+      // ignore optional .graphcoding directory watcher setup failure
+    }
+  }
+
+  const heartbeat = setInterval(() => {
+    if (!closed) {
+      res.write(": keep-alive\n\n");
+    }
+  }, 15_000);
+
+  writeEvent("workspace-watch-ready", { rootPath });
+
+  req.on("close", () => {
+    closed = true;
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    clearInterval(heartbeat);
+    for (const watcher of watchers) {
+      watcher.close();
+    }
+    res.end();
+  });
 });
 
 app.post("/api/workspace/read-file", async (req, res) => {
@@ -1487,8 +1952,34 @@ app.post("/api/workspace/write-artifacts", async (req, res) => {
   }
 });
 
+app.post("/api/workspace/delete-artifacts", async (req, res) => {
+  try {
+    const rootPath = typeof req.body?.rootPath === "string" ? req.body.rootPath : "";
+    const artifactPaths = Array.isArray(req.body?.paths) ? req.body.paths : [];
+
+    if (!rootPath) {
+      res.status(400).json({ ok: false, error: "rootPath is required." });
+      return;
+    }
+
+    for (const relativePath of artifactPaths) {
+      if (typeof relativePath !== "string" || relativePath.trim().length === 0) {
+        continue;
+      }
+
+      const destination = ensureWithinRoot(rootPath, relativePath);
+      await fs.rm(destination, { force: true, recursive: false });
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to delete artifacts.";
+    res.status(400).json({ ok: false, error: message });
+  }
+});
+
 app.post("/api/ai/diagram", async (req, res) => {
-  const { brief, diagram, harness, strategy } = req.body ?? {};
+  const { brief, diagram, harness, strategy, intakeContext } = req.body ?? {};
 
   if (typeof brief !== "string" || brief.trim().length === 0) {
     res.status(400).json({
@@ -1519,12 +2010,12 @@ app.post("/api/ai/diagram", async (req, res) => {
       return;
     }
 
-    const prompt = buildPromptFromBrief(brief, diagram, harness, mode);
+    const prompt = buildPromptFromBrief(brief, diagram, harness, mode, intakeContext);
     const { parsed, raw } = await runCodexStructuredOutput({
       prompt,
       schema: DIAGRAM_SCHEMA,
       name: "diagram",
-      timeoutMs: 180000,
+      timeoutMs: 300000,
     });
     const sanitized = sanitizeDiagramBlueprint(parsed, brief, harness);
 
@@ -1569,7 +2060,7 @@ app.post("/api/ai/spec", async (req, res) => {
   try {
     const status = codexStatus();
     if (!status.codexInstalled || !status.codexAuthenticated) {
-      const spec = fallbackSpec(diagram, scope, status.detail);
+      const spec = sanitizeSpecResponse(fallbackSpec(diagram, scope, status.detail), diagram, scope);
       res.json({
         ok: true,
         source: "fallback",
@@ -1581,16 +2072,17 @@ app.post("/api/ai/spec", async (req, res) => {
     }
 
     const { parsed, raw } = await runCodexSpec(diagram, scope);
+    const sanitizedSpec = sanitizeSpecResponse(parsed, diagram, scope);
     res.json({
       ok: true,
       source: "codex",
       generatedAt: new Date().toISOString(),
-      spec: parsed,
+      spec: sanitizedSpec,
       raw,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
-    const spec = fallbackSpec(diagram, scope, message);
+    const spec = sanitizeSpecResponse(fallbackSpec(diagram, scope, message), diagram, scope);
     res.json({
       ok: true,
       source: "fallback",
@@ -1602,7 +2094,7 @@ app.post("/api/ai/spec", async (req, res) => {
 });
 
 app.post("/api/ai/build", async (req, res) => {
-  const { prompt, rootPath, requestedMode, harness } = req.body ?? {};
+  const { prompt, rootPath, requestedMode, harness, stepContract } = req.body ?? {};
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
     res.status(400).json({
@@ -1638,15 +2130,52 @@ app.post("/api/ai/build", async (req, res) => {
       throw new Error("rootPath must point to a directory.");
     }
 
+    let beforeSnapshot = null;
+    let contractPath = null;
+    if (mode === "selection") {
+      if (!stepContract || typeof stepContract !== "object" || typeof stepContract.selectedNodeId !== "string") {
+        throw new Error("selection build requires a valid current step contract.");
+      }
+      contractPath = await writeSelectionStepContract({
+        rootPath: resolvedRoot,
+        contract: stepContract,
+      });
+      beforeSnapshot = await captureWorkspaceSnapshot(resolvedRoot);
+    }
+
     const wrappedPrompt = buildWorkspaceExecutionPrompt(
       prompt,
       harness,
       mode,
     );
-    const build = await runCodexWorkspaceBuild({
+    const build = await runWorkspaceBuildWithRecovery({
       prompt: wrappedPrompt,
       cwd: resolvedRoot,
       mode,
+      maxAttempts: mode === "selection" ? 4 : 3,
+      runAttempt: runCodexWorkspaceBuild,
+      verifyAttempt:
+        mode === "selection" && beforeSnapshot && stepContract
+          ? async () => {
+              const verification = await verifySelectionBuildScope({
+                rootPath: resolvedRoot,
+                beforeSnapshot,
+                contract: stepContract,
+              });
+
+              if (!verification.ok) {
+                throw Object.assign(new Error(verification.violations.join("\n")), {
+                  partialOutput: [
+                    "Out-of-scope verifier blocked this selection build.",
+                    "",
+                    ...verification.violations.map((entry) => `- ${entry}`),
+                    "",
+                    `Touched files: ${verification.diff.touchedFiles.join(", ") || "[none]"}`,
+                  ].join("\n"),
+                });
+              }
+            }
+          : undefined,
     });
 
     res.json({
@@ -1659,12 +2188,21 @@ app.post("/api/ai/build", async (req, res) => {
       output: build.output,
       promptPath: build.promptPath,
       logPath: build.logPath,
+      mistakePath: build.mistakePath,
+      contractPath: contractPath ?? CURRENT_STEP_CONTRACT_RELATIVE_PATH,
+      attemptCount: build.attemptCount,
+      recovered: build.recovered,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     res.status(500).json({
       ok: false,
       error: message,
+      promptPath: typeof error?.promptPath === "string" ? error.promptPath : undefined,
+      logPath: typeof error?.logPath === "string" ? error.logPath : undefined,
+      mistakePath: typeof error?.mistakePath === "string" ? error.mistakePath : undefined,
+      attemptCount: typeof error?.attemptCount === "number" ? error.attemptCount : undefined,
+      partialOutput: typeof error?.partialOutput === "string" ? error.partialOutput : undefined,
     });
   }
 });

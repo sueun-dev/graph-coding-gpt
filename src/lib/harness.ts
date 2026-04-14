@@ -237,7 +237,7 @@ export const inferHarnessPreset = (files: WorkspaceFile[]): HarnessPresetId => {
   if (has("pyproject.toml") || has("fastapi") || has("requirements.txt")) {
     return "api-service";
   }
-  if (has(".graphcoding") || has("mcp") || has("agent") || has("codex")) {
+  if (has("mcp") || has("agent") || has("codex")) {
     return "agent-tool";
   }
   return "saas-web";

@@ -1,5 +1,6 @@
 import type { ChangeEvent } from "react";
-import type { DiagramEdge, DiagramNode, LineStyle, NodeStatus } from "../lib/types";
+import type { DiagramEdge, DiagramNode, LineStyle, NodeStatus, ShapeType } from "../lib/types";
+import { SHAPE_LIBRARY } from "../lib/diagram";
 
 type InspectorProps = {
   selectedNode: DiagramNode | null;
@@ -7,6 +8,9 @@ type InspectorProps = {
   selectedNodeCount: number;
   onNodeFieldChange: (field: string, value: string) => void;
   onEdgeFieldChange: (field: string, value: string | boolean) => void;
+  onDuplicateNode: () => void;
+  onDeleteSelection: () => void;
+  onClearSelection: () => void;
 };
 
 const statusOptions: NodeStatus[] = ["planned", "active", "blocked", "done"];
@@ -18,6 +22,9 @@ export default function InspectorPanel({
   selectedNodeCount,
   onNodeFieldChange,
   onEdgeFieldChange,
+  onDuplicateNode,
+  onDeleteSelection,
+  onClearSelection,
 }: InspectorProps) {
   const activePanel = selectedNode ? "node" : selectedEdge ? "edge" : "empty";
 
@@ -37,6 +44,16 @@ export default function InspectorPanel({
 
       {activePanel === "node" && selectedNode && (
         <div className="form-stack">
+          <label>
+            <span>도형</span>
+            <select value={selectedNode.data.shape} onChange={handleInput("shape")}>
+              {SHAPE_LIBRARY.map((shape) => (
+                <option key={shape.type} value={shape.type}>
+                  {shape.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label>
             <span>제목</span>
             <input value={selectedNode.data.title} onChange={handleInput("title")} />
@@ -79,6 +96,17 @@ export default function InspectorPanel({
               ))}
             </select>
           </label>
+          <div className="inspector-actions">
+            <button className="ghost-button compact-button" onClick={onDuplicateNode}>
+              Duplicate Node
+            </button>
+            <button className="ghost-button compact-button danger-button" onClick={onDeleteSelection}>
+              Delete Node
+            </button>
+            <button className="ghost-button compact-button" onClick={onClearSelection}>
+              Clear Selection
+            </button>
+          </div>
         </div>
       )}
 
@@ -120,6 +148,14 @@ export default function InspectorPanel({
               rows={5}
             />
           </label>
+          <div className="inspector-actions">
+            <button className="ghost-button compact-button danger-button" onClick={onDeleteSelection}>
+              Delete Edge
+            </button>
+            <button className="ghost-button compact-button" onClick={onClearSelection}>
+              Clear Selection
+            </button>
+          </div>
         </div>
       )}
 

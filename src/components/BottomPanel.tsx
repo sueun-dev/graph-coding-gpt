@@ -45,6 +45,24 @@ export default function BottomPanel({ diagram, result, error, loading }: BottomP
           <p>{result.spec.overview}</p>
         </section>
         <section className="spec-card">
+          <h3>Whole Graph Understanding</h3>
+          <p>{result.spec.systemUnderstanding.fullGraphSummary}</p>
+          <ul>
+            {result.spec.systemUnderstanding.primaryFlow.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </section>
+        <section className="spec-card">
+          <h3>Scope Contract</h3>
+          <p>{result.spec.scopeContract.currentStepGoal}</p>
+          <ul>
+            {result.spec.scopeContract.mustImplement.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </section>
+        <section className="spec-card">
           <h3>Architecture</h3>
           <ul>
             {result.spec.architecture.map((item) => (
@@ -67,6 +85,20 @@ export default function BottomPanel({ diagram, result, error, loading }: BottomP
               <li key={item}>{item}</li>
             ))}
           </ul>
+        </section>
+        <section className="spec-card">
+          <h3>Recommendations</h3>
+          {result.spec.recommendations.length > 0 ? (
+            <ul>
+              {result.spec.recommendations.map((item) => (
+                <li key={`${item.title}:${item.impact}`}>
+                  {item.title}: {item.rationale}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>현재 단계에서 분리된 추가 추천이 없습니다.</p>
+          )}
         </section>
       </div>
     );

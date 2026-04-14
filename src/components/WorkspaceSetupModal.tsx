@@ -92,6 +92,10 @@ export default function WorkspaceSetupModal({
   };
 
   const save = async () => {
+    if (!canWriteToWorkspace) {
+      return;
+    }
+
     setSaving(true);
     try {
       await onSave(config);
@@ -114,7 +118,7 @@ export default function WorkspaceSetupModal({
             </p>
           </div>
           <div className="setup-modal__header-meta">
-            <span className="editor-chip">{canWriteToWorkspace ? "writes to workspace" : "download fallback"}</span>
+            <span className="editor-chip">{canWriteToWorkspace ? "writes to workspace" : "open folder required"}</span>
             <button className="icon-button" onClick={onClose} title="Close">
               ×
             </button>
@@ -294,6 +298,7 @@ export default function WorkspaceSetupModal({
             <code>.graphcoding/harness.json</code>
             <code>.graphcoding/project-profile.md</code>
             <code>.graphcoding/build-policy.json</code>
+            {!canWriteToWorkspace ? <span>Open Folder로 native workspace를 먼저 연결해야 저장할 수 있습니다.</span> : null}
           </div>
           <div className="setup-footer-actions">
             <button className="ghost-button compact-button" onClick={onClose}>
@@ -304,7 +309,7 @@ export default function WorkspaceSetupModal({
                 Next
               </button>
             ) : (
-              <button className="primary-button compact-button" onClick={save} disabled={saving}>
+              <button className="primary-button compact-button" onClick={save} disabled={saving || !canWriteToWorkspace}>
                 {saving ? "Saving..." : "Save Harness"}
               </button>
             )}

@@ -1,21 +1,38 @@
-import { type ChangeEvent, useMemo, useState } from "react";
-import FolderOpenButton from "./FolderOpenButton";
+import { useMemo, useState } from "react";
 import { SHAPE_LIBRARY } from "../lib/diagram";
 import { getHarnessPreset } from "../lib/harness";
-import type { EditorTab, HarnessConfig, ShapeType, WorkspaceFile, WorkspaceTreeNode } from "../lib/types";
+import type {
+  EditorTab,
+  HarnessConfig,
+  ShapeType,
+  WorkspaceBootstrapStatus,
+  WorkspaceFile,
+  WorkspaceTreeNode,
+} from "../lib/types";
 
 type ExplorerPanelProps = {
   workspaceName: string;
+  workspaceMode: "none" | "native";
+  workspaceRootPath: string | null;
+  workspaceBootstrap: WorkspaceBootstrapStatus | null;
   workspaceTree: WorkspaceTreeNode[];
   editorTabs: EditorTab[];
   activeEditor: string;
+  bootstrapChecks: Array<{
+    id: string;
+    label: string;
+    detail: string;
+    ready: boolean;
+  }>;
   onOpenFolder: () => void;
-  onFolderImportChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onReloadWorkspace: () => void;
+  onReopenLastWorkspace: () => void;
   onSelectEditor: (id: string) => void;
   onSelectFile: (file: WorkspaceFile) => void;
   onAddNode: (shape: ShapeType) => void;
   onResetDiagram: () => void;
   harnessConfig: HarnessConfig | null;
+  canReopenLastWorkspace: boolean;
   onOpenSetup: () => void;
 };
 
@@ -57,16 +74,22 @@ function TreeItem({ node, depth, activeEditor, onSelectFile }: TreeItemProps) {
 
 export default function ExplorerPanel({
   workspaceName,
+  workspaceMode,
+  workspaceRootPath,
+  workspaceBootstrap,
   workspaceTree,
   editorTabs,
   activeEditor,
+  bootstrapChecks,
   onOpenFolder,
-  onFolderImportChange,
+  onReloadWorkspace,
+  onReopenLastWorkspace,
   onSelectEditor,
   onSelectFile,
   onAddNode,
   onResetDiagram,
   harnessConfig,
+  canReopenLastWorkspace,
   onOpenSetup,
 }: ExplorerPanelProps) {
   const openEditors = useMemo(
@@ -95,6 +118,52 @@ export default function ExplorerPanel({
       </div>
 
       <div className="sidebar-section">
+        <div className="sidebar-subheading">WORKSPACE BOOTSTRAP</div>
+        <div className="bootstrap-stack">
+          {bootstrapChecks.map((check) => (
+            <div key={check.id} className={`bootstrap-step ${check.ready ? "is-ready" : ""}`}>
+              <span className="bootstrap-step__state">{check.ready ? "✓" : "•"}</span>
+              <span className="bootstrap-step__copy">
+                <strong>{check.label}</strong>
+                <small>{check.detail}</small>
+              </span>
+            </div>
+          ))}
+        </div>
+        {workspaceBootstrap ? (
+          <div className="bootstrap-summary">
+            <strong>{workspaceBootstrap.workspaceKind}</strong>
+            <span>{workspaceBootstrap.workspaceSummary}</span>
+            <div className={`resume-branch ${workspaceBootstrap.resume.internalBranch.needsDecision ? "needs-decision" : ""}`}>
+              <strong>{workspaceBootstrap.resume.resumeBranch.label}</strong>
+              <span>{workspaceBootstrap.resume.internalBranch.label}</span>
+              <small>{workspaceBootstrap.resume.internalBranch.reason}</small>
+            </div>
+            {workspaceBootstrap.warnings.length > 0 ? (
+              <div className="bootstrap-warning-list">
+                {workspaceBootstrap.warnings.slice(0, 2).map((warning) => (
+                  <span key={warning} className="bootstrap-warning">
+                    {warning}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {workspaceBootstrap.projectMarkers.length > 0 ? (
+              <div className="bootstrap-chip-list">
+                {workspaceBootstrap.projectMarkers.slice(0, 4).map((marker) => (
+                  <span key={marker} className="editor-chip bootstrap-chip">
+                    {marker}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="sidebar-empty">Open Folder로 workspace root를 고정하면 bootstrap 상태와 프로젝트 신호를 계산합니다.</p>
+        )}
+      </div>
+
+      <div className="sidebar-section">
         <div className="sidebar-subheading">WORKSPACE SETUP</div>
         <div className="workspace-actions">
           <button className="primary-button compact-button" onClick={onOpenSetup}>
@@ -118,9 +187,26 @@ export default function ExplorerPanel({
           <button className="primary-button compact-button" onClick={onOpenFolder}>
             Open Folder
           </button>
-          <FolderOpenButton label="Import" variant="ghost" onChange={onFolderImportChange} />
+          {workspaceMode === "native" && workspaceRootPath ? (
+            <button className="secondary-button compact-button" onClick={onReloadWorkspace}>
+              Refresh
+            </button>
+          ) : canReopenLastWorkspace ? (
+            <button className="secondary-button compact-button" onClick={onReopenLastWorkspace}>
+              Reopen
+            </button>
+          ) : null}
         </div>
         <div className="workspace-root">{workspaceName}</div>
+        {workspaceBootstrap ? (
+          <div className="workspace-meta">
+            <span>{workspaceBootstrap.fileCount} files indexed</span>
+            <span>{workspaceBootstrap.ignoredDirectoryCount} heavy folders ignored</span>
+            {workspaceBootstrap.symlinkEntryCount > 0 ? <span>{workspaceBootstrap.symlinkEntryCount} symlink entries skipped</span> : null}
+            {workspaceBootstrap.hasHarness ? <span>Harness detected</span> : null}
+            {workspaceBootstrap.resume.hasManifest ? <span>Managed manifest detected</span> : <span>No managed manifest yet</span>}
+          </div>
+        ) : null}
         <div className="tree-list">
           {workspaceTree.length > 0 ? (
             workspaceTree.map((node) => <TreeItem key={node.id} node={node} depth={0} activeEditor={activeEditor} onSelectFile={onSelectFile} />)
