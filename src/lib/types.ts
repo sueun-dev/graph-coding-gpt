@@ -145,14 +145,54 @@ export type DiagramGenerationResponse = {
   error?: string;
 };
 
-export type BuildResponse = {
+export type NodeBuildStatus =
+  | "pending"
+  | "implementing"
+  | "testing"
+  | "fixing"
+  | "done"
+  | "failed";
+
+export type NodeTestResult = {
+  passed: boolean;
+  failures: string[];
+  stdout: string;
+  stderr: string;
+};
+
+export type NodeBuildRecord = {
+  nodeId: string;
+  nodeTitle: string;
+  nodeShape: ShapeType;
+  status: NodeBuildStatus;
+  attempts: number;
+  startedAt?: string;
+  finishedAt?: string;
+  files: string[];
+  lastOutput: string;
+  testResult: NodeTestResult | null;
+  lastError?: string;
+};
+
+export type BuildLoopState = {
+  running: boolean;
+  paused: boolean;
+  currentNodeId: string | null;
+  order: string[];
+  records: Record<string, NodeBuildRecord>;
+  startedAt?: string;
+  finishedAt?: string;
+  failureReason?: string;
+};
+
+export type BuildNodeResponse = {
   ok: boolean;
-  source: "codex";
-  generatedAt: string;
-  mode: "full" | "selection";
-  workspaceRoot: string;
-  promptKind: "buildPrompt" | "iterationPrompt";
+  nodeId: string;
+  status: NodeBuildStatus;
+  attempts: number;
+  files: string[];
   output: string;
+  testResult: NodeTestResult | null;
   promptPath?: string;
   logPath?: string;
   error?: string;

@@ -1,5 +1,5 @@
 import type { ChangeEvent } from "react";
-import type { BuildResponse, DiagramDocument, DiagramGenerationResponse, SpecResponse } from "../lib/types";
+import type { DiagramDocument, DiagramGenerationResponse, SpecResponse } from "../lib/types";
 
 type AuthStatus = {
   codexInstalled: boolean;
@@ -17,17 +17,9 @@ type RunPanelProps = {
   loading: boolean;
   result: SpecResponse | null;
   error: string;
-  buildLoading: boolean;
-  buildResult: BuildResponse | null;
-  buildError: string;
-  canBuildInWorkspace: boolean;
-  buildHint: string;
-  canBuildSelection: boolean;
-  canBuildFull: boolean;
   onBriefChange: (value: string) => void;
   onGenerateDiagram: (strategy: "replace" | "augment") => void;
   onGenerate: (mode: "full" | "selection") => void;
-  onBuild: (mode: "full" | "selection") => void;
 };
 
 export default function RunPanel({
@@ -40,17 +32,9 @@ export default function RunPanel({
   loading,
   result,
   error,
-  buildLoading,
-  buildResult,
-  buildError,
-  canBuildInWorkspace,
-  buildHint,
-  canBuildSelection,
-  canBuildFull,
   onBriefChange,
   onGenerateDiagram,
   onGenerate,
-  onBuild,
 }: RunPanelProps) {
   const scopeLabel = diagram.scope.mode === "selection" ? `${diagram.scope.nodeIds.length} nodes selected` : "Full diagram";
   const hasDiagram = diagram.nodes.length > 0;
@@ -140,7 +124,7 @@ export default function RunPanel({
           현재 범위: <strong>{scopeLabel}</strong>
         </p>
         <p>
-          이 단계는 코드를 바로 만드는 버튼이 아니라, 코드 생성을 위한 스펙과 프롬프트를 만드는 단계입니다.
+          코드를 쓰기 전에 확정된 diagram에서 스펙 문서를 뽑아냅니다. 코드 생성은 아래의 <strong>Build Loop</strong>에서 노드 단위로 진행합니다.
         </p>
         <div className="button-row">
           <button className="primary-button" onClick={() => onGenerate("selection")} disabled={loading || diagram.nodes.length === 0}>
@@ -148,20 +132,6 @@ export default function RunPanel({
           </button>
           <button className="secondary-button" onClick={() => onGenerate("full")} disabled={loading || diagram.nodes.length === 0}>
             Generate Full Spec
-          </button>
-        </div>
-      </div>
-
-      <div className="runtime-card">
-        <h3>Spec to Code</h3>
-        <p>{buildHint}</p>
-        {!canBuildInWorkspace ? <p className="result-warning">코드 생성은 `Open Folder`로 연 native workspace에서만 실행됩니다.</p> : null}
-        <div className="button-row">
-          <button className="primary-button" onClick={() => onBuild("selection")} disabled={buildLoading || !canBuildSelection}>
-            Build Selection Code
-          </button>
-          <button className="secondary-button" onClick={() => onBuild("full")} disabled={buildLoading || !canBuildFull}>
-            Build Full Code
           </button>
         </div>
       </div>
@@ -185,33 +155,6 @@ export default function RunPanel({
         <div className="result-card">
           <h3>Running</h3>
           <p>Codex에 도식화와 범위를 전달해 시스템 설계 문서를 만들고 있습니다.</p>
-        </div>
-      )}
-
-      {buildLoading && (
-        <div className="result-card">
-          <h3>Building Code</h3>
-          <p>현재 workspace에 GPT-5.4가 직접 코드를 작성하고 있습니다. 파일 수가 많거나 설치/검증이 포함되면 오래 걸릴 수 있습니다.</p>
-        </div>
-      )}
-
-      {buildError && (
-        <div className="result-card error-card">
-          <h3>Build 오류</h3>
-          <p>{buildError}</p>
-        </div>
-      )}
-
-      {buildResult && (
-        <div className="result-card">
-          <div className="result-card__header">
-            <h3>{buildResult.mode === "selection" ? "Selection Code Build" : "Full Code Build"}</h3>
-            <span className="result-source">{buildResult.source}</span>
-          </div>
-          <p>{buildResult.workspaceRoot}</p>
-          <p className="result-warning">
-            마지막 실행 프롬프트: <strong>{buildResult.promptKind}</strong>
-          </p>
         </div>
       )}
 

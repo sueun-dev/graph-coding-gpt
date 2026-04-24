@@ -1337,55 +1337,140 @@ const runCodexSpec = async (diagram, scope, harness) => {
   });
 };
 
-const buildWorkspaceExecutionPrompt = (prompt, harness, mode) => {
-  const design = harness && harness.design ? harness.design : null;
-  const designBlock = design
-    ? `
-Design Tokens (authoritative — wire these into the codebase, do not re-invent):
-${JSON.stringify(design, null, 2)}
+const slugifyNodeTitle = (title, nodeId) => {
+  const base = String(title || "node")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 40) || "node";
+  const suffix = String(nodeId || "").slice(0, 8) || "x";
+  return `${base}-${suffix}`;
+};
 
-Design wiring requirements:
-- Detect the styling stack from the package.json dependencies and harness.stack.frontend (e.g. Tailwind v3/v4, CSS Modules, vanilla-extract).
-- If Tailwind is used: read .graphcoding/design-tokens.json (if present) or the tokens above, then update tailwind.config.{js,ts,mjs} so theme.extend.colors maps {primary, accent, background, foreground, muted, error} and theme.extend.fontFamily uses design.typography. Use the correct Tailwind major version syntax (v3 uses @tailwind directives in globals.css; v4 uses @import "tailwindcss").
-- Emit CSS custom properties for the palette at :root in the global stylesheet (globals.css or equivalent) and switch dark/light via design.theme.
-- In every UI component, use className utilities that reference the token names (e.g. bg-background, text-foreground, bg-primary, rounded-{radius}). Do not hardcode raw color values in components.
-- radius="sharp" => rounded-none; radius="rounded" => rounded-xl; radius="pill" => rounded-full. density="compact" => tighter paddings; density="comfortable" => generous paddings.
-- Apply the referenceStyle as qualitative direction (layout feel, spacing rhythm, micro-interactions) and honor design.notes verbatim when present.
-- Verify visually-relevant components actually import and use token classNames; grep for hardcoded hex colors before declaring done.
+const deriveBuildOrder = (diagram) => {
+  const skip = new Set(["note", "group"]);
+  const runtimeNodes = (diagram?.nodes || []).filter((n) => !skip.has(n.shape));
+  const runtimeIds = new Set(runtimeNodes.map((n) => n.id));
+
+  const incoming = new Map(runtimeNodes.map((n) => [n.id, new Set()]));
+  const outgoing = new Map(runtimeNodes.map((n) => [n.id, new Set()]));
+  for (const edge of diagram?.edges || []) {
+    if (!runtimeIds.has(edge.source) || !runtimeIds.has(edge.target)) continue;
+    if (edge.source === edge.target) continue;
+    incoming.get(edge.target).add(edge.source);
+    outgoing.get(edge.source).add(edge.target);
+  }
+
+  const indexOf = new Map(runtimeNodes.map((n, i) => [n.id, i]));
+  const sortKey = (a, b) => {
+    const na = runtimeNodes[indexOf.get(a)];
+    const nb = runtimeNodes[indexOf.get(b)];
+    const ax = na?.position?.x ?? 0;
+    const bx = nb?.position?.x ?? 0;
+    if (ax !== bx) return ax - bx;
+    return indexOf.get(a) - indexOf.get(b);
+  };
+
+  const ready = runtimeNodes.filter((n) => incoming.get(n.id).size === 0).map((n) => n.id);
+  ready.sort(sortKey);
+
+  const ordered = [];
+  while (ready.length > 0) {
+    const next = ready.shift();
+    ordered.push(next);
+    for (const downstream of outgoing.get(next)) {
+      incoming.get(downstream).delete(next);
+      if (incoming.get(downstream).size === 0) {
+        ready.push(downstream);
+        ready.sort(sortKey);
+      }
+    }
+  }
+
+  const leftovers = runtimeNodes
+    .map((n) => n.id)
+    .filter((id) => !ordered.includes(id))
+    .sort(sortKey);
+  return [...ordered, ...leftovers];
+};
+
+const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
+  const design = harness?.design ? JSON.stringify(harness.design, null, 2) : "null";
+  const nodeSlug = slugifyNodeTitle(node.title, node.id);
+  const priorContext = Array.isArray(previouslyBuilt) && previouslyBuilt.length > 0
+    ? previouslyBuilt
+        .map((p) => `- ${p.title} [${p.shape}]: files=${(p.files || []).slice(0, 4).join(", ")}${(p.files || []).length > 4 ? "..." : ""}`)
+        .join("\n")
+    : "(none — this is the first node)";
+
+  const bootstrapBlock = isFirst
+    ? `
+Bootstrap requirements (first node only):
+- Scaffold package.json with the correct packageManager (harness.stack.packageManager). Include "type": "module".
+- Install vitest@^2, @types/node, typescript, jsdom as devDependencies.
+- Create tsconfig.json: target ES2022, module Bundler, moduleResolution Bundler, jsx react-jsx, strict true, include [src, tests].
+- Create vitest.config.ts with environment "jsdom" and include ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts", "src/**/*.test.tsx"].
+- Create the empty tests/ directory; every subsequent node adds its own subfolder.
+- If harness.stack.frontend uses Tailwind: create tailwind.config.ts and src/globals.css wiring the six palette vars and typography.
+- Run the package manager's install command once so node_modules is ready for later nodes' tests.
+`.trim()
+    : `
+The workspace is already scaffolded by prior nodes. Do NOT re-initialize package.json, tsconfig, or vitest config. Only add the files this node needs.`.trim();
+
+  const fixBlock = previousTestFailure
+    ? `
+PREVIOUS TEST FAILURE — THIS IS A FIX ATTEMPT. Patch the root cause and do not touch unrelated code.
+
+${previousTestFailure.slice(0, 4000)}
 `.trim()
     : "";
 
   return `
-You are executing a coding task directly in the current working directory.
+You are implementing EXACTLY ONE node of a diagram-driven system. Do not implement other nodes. Do not invent features beyond this node's explicit behavior.
 
-Rules:
-- Read the existing workspace before editing.
-- Modify files directly in this workspace. Do not create an extra nested project root.
-- Respect the harness as an environment and quality policy, not as a license to invent new product features.
-- If the mode is "selection", implement only the selected scope. Leave outside boundaries stubbed but compiling and testable.
-- Run validation commands when feasible for this stack and summarize what changed.
-- End with a concise summary of changed files and verification status.
-
-Mode:
-${mode}
-
-Harness:
+Harness (environment + quality policy, authoritative):
 ${JSON.stringify(harness ?? null, null, 2)}
 
-${designBlock}
+Design tokens (wire via CSS variables + Tailwind tokens, never hardcode hex):
+${design}
 
-Implementation task:
-${prompt}
+Already-built nodes (import from them; never re-implement):
+${priorContext}
+
+Target node (implement exactly this, no more):
+- id: ${node.id}
+- title: ${node.title}
+- shape: ${node.shape}
+- actor: ${node.actor}
+- intent: ${node.intent}
+- behavior: ${node.behavior}
+- inputs: ${node.inputs}
+- outputs: ${node.outputs}
+- notes: ${node.notes}
+- testHint: ${node.testHint}
+
+${bootstrapBlock}
+
+Work rules for this node:
+1. Write the source file(s) for this node, prefer src/<area>/ structure.
+2. Write comprehensive tests in tests/${nodeSlug}/*.test.ts covering every branch implied by behavior, inputs, outputs, and testHint. Use vitest.
+3. Run the whole workspace's vitest suite and make sure it is green before finishing.
+4. Run \`npx tsc --noEmit\` and make sure it is green before finishing.
+5. Do NOT delete or edit files created by prior nodes unless the current node's behavior explicitly requires it.
+6. End with a terse summary: "Files added: ..." and "Files modified: ...".
+
+${fixBlock}
+
+Start now.
 `.trim();
 };
 
-const runCodexWorkspaceBuild = async ({ prompt, cwd, mode, timeoutMs = 900000 }) => {
+const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 900000 }) => {
   await ensureRuntimeDirs();
-
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const promptPath = path.join(GENERATED_DIR, `build-${mode}-prompt-${stamp}.md`);
-  const logPath = path.join(GENERATED_DIR, `build-${mode}-log-${stamp}.txt`);
-
+  const shortId = String(nodeId || "x").slice(0, 8);
+  const promptPath = path.join(GENERATED_DIR, `node-${shortId}-attempt${attempt}-prompt-${stamp}.md`);
+  const logPath = path.join(GENERATED_DIR, `node-${shortId}-attempt${attempt}-log-${stamp}.txt`);
   await fs.writeFile(promptPath, prompt);
 
   const args = [
@@ -1402,57 +1487,110 @@ const runCodexWorkspaceBuild = async ({ prompt, cwd, mode, timeoutMs = 900000 })
   ];
 
   const output = await new Promise((resolve, reject) => {
-    const child = spawn("codex", args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
-    });
-
+    const child = spawn("codex", args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`Codex build timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+      reject(new Error(`Codex node build timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-
+    child.stdout.on("data", (c) => { stdout += c.toString(); });
+    child.stderr.on("data", (c) => { stderr += c.toString(); });
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
         reject(new Error(`Codex exited with code ${code}: ${stderr || stdout}`));
         return;
       }
-
-      resolve(
-        [stdout.trim(), stderr.trim() ? `\n[stderr]\n${stderr.trim()}` : ""]
-          .filter(Boolean)
-          .join("\n")
-          .trim(),
-      );
+      resolve([stdout.trim(), stderr.trim() ? `\n[stderr]\n${stderr.trim()}` : ""].filter(Boolean).join("\n").trim());
     });
-
     child.stdin.write(prompt);
     child.stdin.end();
   });
 
-  await fs.writeFile(logPath, typeof output === "string" ? output : String(output));
-  return {
-    output: typeof output === "string" ? output : String(output),
-    promptPath,
-    logPath,
+  await fs.writeFile(logPath, output);
+  return { output, promptPath, logPath };
+};
+
+const detectTestRunner = async (cwd) => {
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+    if (pkg.scripts?.test && /vitest/.test(pkg.scripts.test)) {
+      return { cmd: "npm", args: ["test", "--", "--run", "--reporter=verbose", "--no-color"] };
+    }
+    if (pkg.devDependencies?.vitest || pkg.dependencies?.vitest) {
+      return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
+    }
+    if (pkg.devDependencies?.jest || pkg.dependencies?.jest) {
+      return { cmd: "npx", args: ["--yes", "jest", "--color=false"] };
+    }
+  } catch {}
+  return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
+};
+
+const extractFailureLines = (text) => {
+  const failures = [];
+  const seen = new Set();
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/\bFAIL\b|\bfailed\b|\bError:|AssertionError|Expected |Received /.test(line)) {
+      const block = lines.slice(i, Math.min(i + 8, lines.length)).join("\n");
+      if (!seen.has(block)) {
+        seen.add(block);
+        failures.push(block);
+      }
+    }
+  }
+  const summaryMatch = text.match(/\bTest Files\s+\d+[^\n]*failed[^\n]*/);
+  if (summaryMatch) failures.unshift(summaryMatch[0]);
+  return failures.slice(0, 12);
+};
+
+const runNodeTests = async ({ cwd, timeoutMs = 300000 }) => {
+  const { cmd, args } = await detectTestRunner(cwd);
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.on("data", (c) => { stdout += c.toString(); });
+    child.stderr.on("data", (c) => { stderr += c.toString(); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ passed: false, failures: [`Test runner failed to start: ${err.message}`], stdout, stderr });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (killed) {
+        resolve({ passed: false, failures: [`Tests timed out after ${Math.round(timeoutMs / 1000)}s`], stdout, stderr });
+        return;
+      }
+      const passed = code === 0;
+      const failures = passed ? [] : extractFailureLines(`${stdout}\n${stderr}`);
+      resolve({ passed, failures, stdout, stderr });
+    });
+  });
+};
+
+const listWorkspaceFiles = async (cwd) => {
+  const result = [];
+  const walk = async (dir, prefix = "") => {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".next") continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(path.join(dir, entry.name), rel);
+      else result.push(rel);
+    }
   };
+  await walk(cwd);
+  return result;
 };
 
 app.get("/api/health", (_req, res) => {
@@ -1640,71 +1778,149 @@ app.post("/api/ai/spec", async (req, res) => {
   }
 });
 
-app.post("/api/ai/build", async (req, res) => {
-  const { prompt, rootPath, requestedMode, harness } = req.body ?? {};
-
-  if (typeof prompt !== "string" || prompt.trim().length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "prompt is required",
-    });
+app.post("/api/ai/build-order", (req, res) => {
+  const { diagram } = req.body ?? {};
+  if (!diagram || !Array.isArray(diagram.nodes)) {
+    res.status(400).json({ ok: false, error: "diagram payload required" });
     return;
   }
+  try {
+    const order = deriveBuildOrder(diagram);
+    res.json({ ok: true, order });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.post("/api/ai/build-node", async (req, res) => {
+  const { rootPath, diagram, harness, nodeId, previouslyBuilt, isFirst, maxRetries } = req.body ?? {};
+  const retries = Number.isInteger(maxRetries) ? Math.max(0, Math.min(5, maxRetries)) : 3;
 
   if (typeof rootPath !== "string" || rootPath.trim().length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "rootPath is required",
-    });
+    res.status(400).json({ ok: false, error: "rootPath is required" });
     return;
   }
-
-  const mode = requestedMode === "selection" ? "selection" : "full";
+  if (!diagram || !Array.isArray(diagram.nodes)) {
+    res.status(400).json({ ok: false, error: "diagram payload required" });
+    return;
+  }
+  const node = diagram.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    res.status(400).json({ ok: false, error: "nodeId not found in diagram" });
+    return;
+  }
 
   try {
     const status = codexStatus();
     if (!status.codexInstalled || !status.codexAuthenticated) {
-      res.status(400).json({
-        ok: false,
-        error: status.detail,
-      });
+      res.status(400).json({ ok: false, error: status.detail });
       return;
     }
 
     const resolvedRoot = path.resolve(rootPath);
     const stats = await fs.stat(resolvedRoot);
-    if (!stats.isDirectory()) {
-      throw new Error("rootPath must point to a directory.");
+    if (!stats.isDirectory()) throw new Error("rootPath must be a directory.");
+
+    const filesBefore = new Set(await listWorkspaceFiles(resolvedRoot));
+    const priorList = Array.isArray(previouslyBuilt) ? previouslyBuilt : [];
+
+    let attempt = 0;
+    let lastOutput = "";
+    let lastTestResult = null;
+    let lastPromptPath;
+    let lastLogPath;
+    let previousTestFailure = null;
+    const totalAttempts = Math.max(1, retries + 1);
+
+    while (attempt < totalAttempts) {
+      attempt += 1;
+      const prompt = buildNodePrompt({
+        node,
+        harness,
+        previouslyBuilt: priorList,
+        previousTestFailure,
+        isFirst: !!isFirst && attempt === 1,
+      });
+      const run = await runCodexForNode({
+        prompt,
+        cwd: resolvedRoot,
+        nodeId: node.id,
+        attempt,
+      });
+      lastOutput = run.output;
+      lastPromptPath = run.promptPath;
+      lastLogPath = run.logPath;
+      const tests = await runNodeTests({ cwd: resolvedRoot });
+      lastTestResult = tests;
+      if (tests.passed) break;
+      previousTestFailure = `${tests.failures.join("\n\n")}\n\n[stderr tail]\n${tests.stderr.slice(-2000)}`;
     }
 
-    const wrappedPrompt = buildWorkspaceExecutionPrompt(
-      prompt,
-      harness,
-      mode,
-    );
-    const build = await runCodexWorkspaceBuild({
-      prompt: wrappedPrompt,
-      cwd: resolvedRoot,
-      mode,
-    });
+    const filesAfter = await listWorkspaceFiles(resolvedRoot);
+    const newOrModified = filesAfter.filter((f) => !filesBefore.has(f));
 
     res.json({
       ok: true,
-      source: "codex",
-      generatedAt: new Date().toISOString(),
-      mode,
-      workspaceRoot: resolvedRoot,
-      promptKind: mode === "selection" ? "iterationPrompt" : "buildPrompt",
-      output: build.output,
-      promptPath: build.promptPath,
-      logPath: build.logPath,
+      nodeId: node.id,
+      status: lastTestResult?.passed ? "done" : "failed",
+      attempts: attempt,
+      files: newOrModified,
+      output: lastOutput,
+      testResult: lastTestResult,
+      promptPath: lastPromptPath,
+      logPath: lastLogPath,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
-    res.status(500).json({
-      ok: false,
-      error: message,
-    });
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+const BUILD_STATE_RELPATH = ".graphcoding/build-state.json";
+
+app.post("/api/build-state/save", async (req, res) => {
+  try {
+    const { rootPath, state } = req.body ?? {};
+    if (typeof rootPath !== "string" || !rootPath) {
+      res.status(400).json({ ok: false, error: "rootPath required" });
+      return;
+    }
+    const absolutePath = path.resolve(rootPath, BUILD_STATE_RELPATH);
+    if (state === null || state === undefined) {
+      await fs.unlink(absolutePath).catch((err) => {
+        if (err && err.code !== "ENOENT") throw err;
+      });
+      res.json({ ok: true, cleared: true });
+      return;
+    }
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, JSON.stringify(state, null, 2));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.post("/api/build-state/load", async (req, res) => {
+  try {
+    const { rootPath } = req.body ?? {};
+    if (typeof rootPath !== "string") {
+      res.status(400).json({ ok: false, error: "rootPath required" });
+      return;
+    }
+    const absolutePath = path.resolve(rootPath, BUILD_STATE_RELPATH);
+    try {
+      const content = await fs.readFile(absolutePath, "utf8");
+      res.json({ ok: true, state: JSON.parse(content) });
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        res.json({ ok: true, state: null });
+      } else {
+        throw err;
+      }
+    }
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
   }
 });
 

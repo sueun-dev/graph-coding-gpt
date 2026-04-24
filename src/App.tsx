@@ -12,6 +12,7 @@ import {
   type Connection,
 } from "@xyflow/react";
 import BottomPanel from "./components/BottomPanel";
+import BuildLoopPanel from "./components/BuildLoopPanel";
 import DiagramNodeRenderer from "./components/DiagramNode";
 import ExplorerPanel from "./components/ExplorerPanel";
 import InspectorPanel from "./components/InspectorPanel";
@@ -25,9 +26,12 @@ import {
   tryParseHarnessConfig,
 } from "./lib/harness";
 import type {
-  BuildResponse,
+  BuildLoopState,
+  BuildNodeResponse,
   DiagramEdge,
   DiagramGenerationResponse,
+  NodeBuildRecord,
+  NodeBuildStatus,
   DiagramNode as DiagramNodeType,
   EditorTab,
   HarnessConfig,
@@ -63,7 +67,7 @@ type AuthStatus = {
   detail: string;
 };
 
-type AuxPanel = "ai" | "inspector";
+type AuxPanel = "ai" | "inspector" | "build";
 type DirectoryWindow = Window &
   typeof globalThis & {
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite"; startIn?: string }) => Promise<FileSystemDirectoryHandle>;
@@ -87,9 +91,8 @@ export default function App() {
   const [diagramError, setDiagramError] = useState("");
   const [diagramLoading, setDiagramLoading] = useState(false);
   const [lastSpecMode, setLastSpecMode] = useState<"full" | "selection" | null>(null);
-  const [buildLoading, setBuildLoading] = useState(false);
-  const [buildResult, setBuildResult] = useState<BuildResponse | null>(null);
-  const [buildError, setBuildError] = useState("");
+  const [buildLoopState, setBuildLoopState] = useState<BuildLoopState | null>(null);
+  const buildAbortRef = useRef(false);
   const [workspaceName, setWorkspaceName] = useState("NO FOLDER OPENED");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [openedFiles, setOpenedFiles] = useState<WorkspaceFile[]>([]);
@@ -277,8 +280,8 @@ export default function App() {
     setResult(null);
     setLastSpecMode(null);
     setError("");
-    setBuildResult(null);
-    setBuildError("");
+
+
     setDiagramResult(null);
     setDiagramError("");
     setActiveEditor("diagram");
@@ -377,8 +380,8 @@ export default function App() {
     setResult(null);
     setLastSpecMode(null);
     setError("");
-    setBuildResult(null);
-    setBuildError("");
+
+
     setDiagramResult(null);
     setDiagramError("");
     setActiveEditor("diagram");
@@ -549,8 +552,8 @@ export default function App() {
 
       setResult(data);
       setLastSpecMode(mode);
-      setBuildResult(null);
-      setBuildError("");
+  
+  
       setActiveEditor("spec");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "스펙 생성에 실패했습니다.");
@@ -602,8 +605,8 @@ export default function App() {
       setDiagramResult(data);
       setResult(null);
       setLastSpecMode(null);
-      setBuildResult(null);
-      setBuildError("");
+  
+  
       setError("");
       setActiveEditor("diagram");
 
@@ -622,52 +625,198 @@ export default function App() {
     }
   };
 
-  const buildCode = async (mode: "full" | "selection") => {
-    if (workspaceMode !== "native" || !workspaceRootPath) {
-      setBuildError("코드 생성은 Open Folder로 연 native workspace에서만 실행할 수 있습니다.");
-      setActiveAuxPanel("ai");
-      return;
-    }
-
-    if (!result || lastSpecMode !== mode) {
-      setBuildError(mode === "selection" ? "먼저 Generate Selection Spec을 실행해야 합니다." : "먼저 Generate Full Spec을 실행해야 합니다.");
-      setActiveAuxPanel("ai");
-      return;
-    }
-
-    const prompt = mode === "selection" ? result.spec.iterationPrompt : result.spec.buildPrompt;
-    setBuildLoading(true);
-    setBuildError("");
-    setBuildResult(null);
-    setWorkspaceNotice(mode === "selection" ? "Building selected code in workspace..." : "Building full code in workspace...");
-    setActiveAuxPanel("ai");
-
+  const persistBuildState = async (next: BuildLoopState) => {
+    if (workspaceMode !== "native" || !workspaceRootPath) return;
     try {
-      const response = await fetch("/api/ai/build", {
+      await fetch("/api/build-state/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          requestedMode: mode,
-          rootPath: workspaceRootPath,
-          harness: harnessConfig,
-        }),
+        body: JSON.stringify({ rootPath: workspaceRootPath, state: next }),
       });
+    } catch {
+      // Non-fatal: state persistence is best-effort.
+    }
+  };
 
-      const data = (await response.json()) as BuildResponse & { message?: string; error?: string; ok?: boolean };
-      if (!response.ok || !data.ok) {
-        throw new Error(data.error || data.message || "코드 생성에 실패했습니다.");
+  const updateBuildState = (mutator: (prev: BuildLoopState) => BuildLoopState) => {
+    setBuildLoopState((prev) => {
+      if (!prev) return prev;
+      const next = mutator(prev);
+      void persistBuildState(next);
+      return next;
+    });
+  };
+
+  const updateNodeRecord = (nodeId: string, patch: Partial<NodeBuildRecord>) => {
+    updateBuildState((prev) => ({
+      ...prev,
+      records: {
+        ...prev.records,
+        [nodeId]: { ...prev.records[nodeId], ...patch },
+      },
+    }));
+  };
+
+  const startBuildLoop = async () => {
+    if (workspaceMode !== "native" || !workspaceRootPath) {
+      setWorkspaceNotice("Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다.");
+      setActiveAuxPanel("build");
+      return;
+    }
+    if (diagram.nodes.length === 0) {
+      setWorkspaceNotice("먼저 diagram을 생성하거나 확정하세요.");
+      return;
+    }
+
+    buildAbortRef.current = false;
+    setActiveAuxPanel("build");
+
+    let currentState = buildLoopState;
+    if (!currentState || currentState.order.length === 0) {
+      const orderResponse = await fetch("/api/ai/build-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ diagram }),
+      });
+      const orderData = (await orderResponse.json()) as { ok: boolean; order?: string[]; error?: string };
+      if (!orderData.ok || !orderData.order) {
+        setWorkspaceNotice(orderData.error || "빌드 순서를 계산할 수 없습니다.");
+        return;
+      }
+      const initialRecords: Record<string, NodeBuildRecord> = {};
+      for (const id of orderData.order) {
+        const node = diagram.nodes.find((n) => n.id === id);
+        if (!node) continue;
+        initialRecords[id] = {
+          nodeId: id,
+          nodeTitle: node.title || id.slice(0, 8),
+          nodeShape: node.shape,
+          status: "pending",
+          attempts: 0,
+          files: [],
+          lastOutput: "",
+          testResult: null,
+        };
+      }
+      currentState = {
+        running: true,
+        paused: false,
+        currentNodeId: null,
+        order: orderData.order,
+        records: initialRecords,
+        startedAt: new Date().toISOString(),
+      };
+      setBuildLoopState(currentState);
+      await persistBuildState(currentState);
+    } else {
+      const resumed: BuildLoopState = { ...currentState, running: true, paused: false, failureReason: undefined };
+      setBuildLoopState(resumed);
+      currentState = resumed;
+      await persistBuildState(resumed);
+    }
+
+    const order = currentState.order;
+    let firstPendingHit = true;
+
+    for (let i = 0; i < order.length; i++) {
+      if (buildAbortRef.current) break;
+      const nodeId = order[i];
+      const record = currentState.records[nodeId];
+      if (record?.status === "done") continue;
+      if (record?.status === "failed") {
+        updateBuildState((prev) => ({ ...prev, running: false, paused: true, failureReason: `Node ${record.nodeTitle} previously failed.` }));
+        break;
       }
 
-      setBuildResult(data);
+      const previouslyBuilt = order
+        .slice(0, i)
+        .map((id) => currentState!.records[id])
+        .filter((r) => r && r.status === "done")
+        .map((r) => ({ id: r.nodeId, title: r.nodeTitle, shape: r.nodeShape, files: r.files }));
+
+      updateBuildState((prev) => ({
+        ...prev,
+        currentNodeId: nodeId,
+        records: {
+          ...prev.records,
+          [nodeId]: {
+            ...prev.records[nodeId],
+            status: "implementing",
+            startedAt: new Date().toISOString(),
+            lastError: undefined,
+          },
+        },
+      }));
+
+      try {
+        const response = await fetch("/api/ai/build-node", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rootPath: workspaceRootPath,
+            diagram,
+            harness: harnessConfig,
+            nodeId,
+            previouslyBuilt,
+            isFirst: firstPendingHit,
+            maxRetries: 3,
+          }),
+        });
+        const data = (await response.json()) as BuildNodeResponse & { message?: string };
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || data.message || "node build failed");
+        }
+        firstPendingHit = false;
+
+        const finishedStatus: NodeBuildStatus = data.status;
+        updateNodeRecord(nodeId, {
+          status: finishedStatus,
+          attempts: data.attempts,
+          files: data.files,
+          lastOutput: data.output,
+          testResult: data.testResult,
+          finishedAt: new Date().toISOString(),
+        });
+
+        if (finishedStatus === "failed") {
+          updateBuildState((prev) => ({ ...prev, running: false, paused: true, currentNodeId: null, failureReason: `Node ${record?.nodeTitle ?? nodeId.slice(0, 8)} failed after ${data.attempts} attempts.` }));
+          await reloadNativeWorkspace(workspaceRootPath);
+          return;
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : "node build failed";
+        updateNodeRecord(nodeId, { status: "failed", lastError: message, finishedAt: new Date().toISOString() });
+        updateBuildState((prev) => ({ ...prev, running: false, paused: true, currentNodeId: null, failureReason: message }));
+        await reloadNativeWorkspace(workspaceRootPath);
+        return;
+      }
+
       await reloadNativeWorkspace(workspaceRootPath);
-      setWorkspaceNotice(mode === "selection" ? "Selection code was written into the workspace." : "Full code build was written into the workspace.");
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "코드 생성에 실패했습니다.";
-      setBuildError(message);
-      setWorkspaceNotice(message);
-    } finally {
-      setBuildLoading(false);
+    }
+
+    updateBuildState((prev) => ({
+      ...prev,
+      running: false,
+      paused: false,
+      currentNodeId: null,
+      finishedAt: new Date().toISOString(),
+    }));
+  };
+
+  const stopBuildLoop = () => {
+    buildAbortRef.current = true;
+    updateBuildState((prev) => ({ ...prev, running: false, paused: true }));
+  };
+
+  const resetBuildLoop = () => {
+    buildAbortRef.current = true;
+    setBuildLoopState(null);
+    if (workspaceMode === "native" && workspaceRootPath) {
+      void fetch("/api/build-state/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspaceRootPath, state: null }),
+      });
     }
   };
 
@@ -901,6 +1050,9 @@ export default function App() {
           <button className={`activity-icon ${activeAuxPanel === "inspector" ? "is-active" : ""}`} title="Inspector" onClick={() => setActiveAuxPanel("inspector")}>
             ☰
           </button>
+          <button className={`activity-icon ${activeAuxPanel === "build" ? "is-active" : ""}`} title="Build Loop" onClick={() => setActiveAuxPanel("build")}>
+            ⚒
+          </button>
         </nav>
 
         <ExplorerPanel
@@ -948,6 +1100,9 @@ export default function App() {
             <button className={activeAuxPanel === "inspector" ? "is-active" : ""} onClick={() => setActiveAuxPanel("inspector")}>
               INSPECTOR
             </button>
+            <button className={activeAuxPanel === "build" ? "is-active" : ""} onClick={() => setActiveAuxPanel("build")}>
+              BUILD
+            </button>
           </div>
 
           <div className="auxiliary-body">
@@ -962,29 +1117,33 @@ export default function App() {
                 loading={loading}
                 result={result}
                 error={error}
-                buildLoading={buildLoading}
-                buildResult={buildResult}
-                buildError={buildError}
-                canBuildInWorkspace={workspaceMode === "native" && Boolean(workspaceRootPath)}
-                buildHint={
-                  workspaceMode === "native" && workspaceRootPath
-                    ? "해당 범위의 spec을 먼저 만든 뒤, 아래 버튼으로 현재 폴더에 직접 코드를 작성합니다."
-                    : "먼저 Open Folder로 실제 폴더를 열고, 해당 범위의 spec을 생성한 뒤 코드를 작성할 수 있습니다."
-                }
-                canBuildSelection={workspaceMode === "native" && Boolean(workspaceRootPath) && Boolean(result) && lastSpecMode === "selection"}
-                canBuildFull={workspaceMode === "native" && Boolean(workspaceRootPath) && Boolean(result) && lastSpecMode === "full"}
                 onBriefChange={setDiagramBrief}
                 onGenerateDiagram={generateDiagramFromBrief}
                 onGenerate={generateSpec}
-                onBuild={buildCode}
               />
-            ) : (
+            ) : activeAuxPanel === "inspector" ? (
               <InspectorPanel
                 selectedNode={selectedNode}
                 selectedEdge={selectedEdge}
                 selectedNodeCount={selectedNodes.length}
                 onNodeFieldChange={updateNodeField}
                 onEdgeFieldChange={updateEdgeField}
+              />
+            ) : (
+              <BuildLoopPanel
+                diagram={diagram}
+                state={buildLoopState}
+                canRun={workspaceMode === "native" && Boolean(workspaceRootPath) && diagram.nodes.length > 0}
+                blockedReason={
+                  workspaceMode !== "native" || !workspaceRootPath
+                    ? "Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다."
+                    : diagram.nodes.length === 0
+                      ? "먼저 diagram을 만들거나 확정하세요."
+                      : ""
+                }
+                onStart={() => void startBuildLoop()}
+                onStop={stopBuildLoop}
+                onReset={resetBuildLoop}
               />
             )}
           </div>
@@ -1001,7 +1160,7 @@ export default function App() {
         </div>
         <div className="status-bar__right">
           <span>{workspaceNotice || auth?.detail || "Checking Codex..."}</span>
-          <span>{diagramLoading ? "Generating diagram..." : loading ? "Generating spec..." : buildLoading ? "Building code..." : "Ready"}</span>
+          <span>{diagramLoading ? "Generating diagram..." : loading ? "Generating spec..." : buildLoopState?.running ? `Building node ${buildLoopState.currentNodeId ? (buildLoopState.records[buildLoopState.currentNodeId]?.nodeTitle ?? "") : ""}...` : "Ready"}</span>
         </div>
       </footer>
 
