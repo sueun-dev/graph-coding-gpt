@@ -1514,18 +1514,29 @@ const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 90000
 };
 
 const detectTestRunner = async (cwd) => {
+  const localVitest = path.join(cwd, "node_modules", ".bin", "vitest");
+  const localJest = path.join(cwd, "node_modules", ".bin", "jest");
+  const hasLocal = async (p) => fs.access(p).then(() => true).catch(() => false);
   try {
     const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
-    if (pkg.scripts?.test && /vitest/.test(pkg.scripts.test)) {
-      return { cmd: "npm", args: ["test", "--", "--run", "--reporter=verbose", "--no-color"] };
+    const wantsVitest = /vitest/.test(pkg.scripts?.test || "") || pkg.devDependencies?.vitest || pkg.dependencies?.vitest;
+    const wantsJest = !wantsVitest && (pkg.devDependencies?.jest || pkg.dependencies?.jest);
+    if (wantsVitest && await hasLocal(localVitest)) {
+      return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
     }
-    if (pkg.devDependencies?.vitest || pkg.dependencies?.vitest) {
+    if (wantsJest && await hasLocal(localJest)) {
+      return { cmd: localJest, args: ["--color=false"] };
+    }
+    if (wantsVitest) {
       return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
     }
-    if (pkg.devDependencies?.jest || pkg.dependencies?.jest) {
+    if (wantsJest) {
       return { cmd: "npx", args: ["--yes", "jest", "--color=false"] };
     }
   } catch {}
+  if (await hasLocal(localVitest)) {
+    return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
+  }
   return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
 };
 

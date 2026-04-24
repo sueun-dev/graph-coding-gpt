@@ -171,50 +171,90 @@ export default function App() {
   }, [briefStorageKey]);
 
   useEffect(() => {
+    let cancelled = false;
     setDiagramHydrated(false);
 
     const fresh = createInitialFlow();
-    if (!diagramStorageKey) {
+    const applyFresh = () => {
+      if (cancelled) return;
       setNodes(fresh.nodes);
       setEdges(fresh.edges);
       setDiagramHydrated(true);
-      return;
+    };
+    const applyParsed = (raw: string, key: string | null) => {
+      if (cancelled) return;
+      try {
+        const parsed = JSON.parse(raw) as { nodes: DiagramNodeType[]; edges: DiagramEdge[] };
+        setNodes(parsed.nodes);
+        setEdges(parsed.edges);
+      } catch {
+        if (key) localStorage.removeItem(key);
+        setNodes(fresh.nodes);
+        setEdges(fresh.edges);
+      } finally {
+        setDiagramHydrated(true);
+      }
+    };
+
+    if (!diagramStorageKey) {
+      applyFresh();
+      return () => { cancelled = true; };
+    }
+
+    // Native workspaces: prefer disk copy, fall back to localStorage.
+    if (workspaceMode === "native" && workspaceRootPath) {
+      void (async () => {
+        try {
+          const response = await fetch("/api/workspace/read-file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rootPath: workspaceRootPath, path: ".graphcoding/diagram.graph.json" }),
+          });
+          if (response.ok) {
+            const data = (await response.json()) as { ok: boolean; content?: string };
+            if (data.ok && data.content) {
+              applyParsed(data.content, null);
+              return;
+            }
+          }
+        } catch { /* fall through */ }
+        const raw = localStorage.getItem(diagramStorageKey);
+        if (raw) applyParsed(raw, diagramStorageKey);
+        else applyFresh();
+      })();
+      return () => { cancelled = true; };
     }
 
     const raw = localStorage.getItem(diagramStorageKey);
-    if (!raw) {
-      setNodes(fresh.nodes);
-      setEdges(fresh.edges);
-      setDiagramHydrated(true);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as { nodes: DiagramNodeType[]; edges: DiagramEdge[] };
-      setNodes(parsed.nodes);
-      setEdges(parsed.edges);
-    } catch {
-      localStorage.removeItem(diagramStorageKey);
-      setNodes(fresh.nodes);
-      setEdges(fresh.edges);
-    } finally {
-      setDiagramHydrated(true);
-    }
-  }, [diagramStorageKey, setEdges, setNodes]);
+    if (raw) applyParsed(raw, diagramStorageKey);
+    else applyFresh();
+    return () => { cancelled = true; };
+  }, [diagramStorageKey, setEdges, setNodes, workspaceMode, workspaceRootPath]);
 
   useEffect(() => {
     if (!diagramHydrated || !diagramStorageKey) {
       return;
     }
 
-    localStorage.setItem(
-      diagramStorageKey,
-      JSON.stringify({
-        nodes,
-        edges,
-      }),
-    );
-  }, [diagramHydrated, diagramStorageKey, edges, nodes]);
+    const payload = JSON.stringify({ nodes, edges });
+    localStorage.setItem(diagramStorageKey, payload);
+
+    if (workspaceMode === "native" && workspaceRootPath) {
+      const timer = setTimeout(() => {
+        void fetch("/api/workspace/write-artifacts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rootPath: workspaceRootPath,
+            artifacts: [
+              { path: ".graphcoding/diagram.graph.json", content: payload },
+            ],
+          }),
+        }).catch(() => { /* non-fatal */ });
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [diagramHydrated, diagramStorageKey, edges, nodes, workspaceMode, workspaceRootPath]);
 
   useEffect(() => {
     if (!briefStorageKey) {
@@ -387,6 +427,35 @@ export default function App() {
     setActiveEditor("diagram");
     setWorkspaceNotice("");
   };
+
+  // Restore build-loop progress from disk whenever we have a native workspace root.
+  // Runs on fresh loadWorkspace AND on HMR-preserved state after page reload.
+  useEffect(() => {
+    if (workspaceMode !== "native" || !workspaceRootPath) {
+      setBuildLoopState(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/build-state/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rootPath: workspaceRootPath }),
+        });
+        const data = (await response.json()) as { ok: boolean; state: BuildLoopState | null };
+        if (cancelled) return;
+        if (data.ok && data.state) {
+          setBuildLoopState({ ...data.state, running: false, paused: true });
+        } else {
+          setBuildLoopState(null);
+        }
+      } catch {
+        if (!cancelled) setBuildLoopState(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workspaceMode, workspaceRootPath]);
 
   const reloadNativeWorkspace = async (rootPath: string) => {
     const response = await fetch("/api/workspace/open-folder", {
