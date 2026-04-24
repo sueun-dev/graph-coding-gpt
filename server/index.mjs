@@ -268,25 +268,38 @@ const chooseFolderViaDialog = () => {
   return result.stdout.trim();
 };
 
-const codexStatus = () => {
+// spawnSync("codex login status") takes ~50-200ms; cache for 30s since auth
+// state rarely changes mid-session. Health route can bypass with {fresh:true}.
+const CODEX_STATUS_TTL_MS = 30_000;
+let codexStatusCache = { value: null, expiresAt: 0 };
+
+const codexStatus = (opts) => {
+  const fresh = !!opts?.fresh;
+  const now = Date.now();
+  if (!fresh && codexStatusCache.value && now < codexStatusCache.expiresAt) {
+    return codexStatusCache.value;
+  }
   const check = spawnSync("codex", ["login", "status"], {
     encoding: "utf8",
   });
 
+  let result;
   if (check.error) {
-    return {
+    result = {
       codexInstalled: false,
       codexAuthenticated: false,
       detail: check.error.message,
     };
+  } else {
+    const detail = `${check.stdout}${check.stderr}`.trim();
+    result = {
+      codexInstalled: true,
+      codexAuthenticated: check.status === 0,
+      detail: detail || "Unknown",
+    };
   }
-
-  const detail = `${check.stdout}${check.stderr}`.trim();
-  return {
-    codexInstalled: true,
-    codexAuthenticated: check.status === 0,
-    detail: detail || "Unknown",
-  };
+  codexStatusCache = { value: result, expiresAt: now + CODEX_STATUS_TTL_MS };
+  return result;
 };
 
 const normalizeScope = (diagram, requestedMode) => {
@@ -1387,11 +1400,13 @@ const deriveBuildOrder = (diagram) => {
     }
   }
 
+  const orderedSet = new Set(ordered);
   const leftovers = runtimeNodes
     .map((n) => n.id)
-    .filter((id) => !ordered.includes(id))
+    .filter((id) => !orderedSet.has(id))
     .sort(sortKey);
-  return [...ordered, ...leftovers];
+  const cycles = leftovers.length > 0;
+  return { order: [...ordered, ...leftovers], cycles };
 };
 
 const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
@@ -1533,7 +1548,9 @@ const detectTestRunner = async (cwd) => {
     if (wantsJest) {
       return { cmd: "npx", args: ["--yes", "jest", "--color=false"] };
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`[detectTestRunner] could not read ${cwd}/package.json: ${err?.message || err}`);
+  }
   if (await hasLocal(localVitest)) {
     return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
   }
@@ -1592,7 +1609,15 @@ const runNodeTests = async ({ cwd, timeoutMs = 300000 }) => {
 const listWorkspaceFiles = async (cwd) => {
   const result = [];
   const walk = async (dir, prefix = "") => {
-    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "EACCES") {
+        console.warn(`[listWorkspaceFiles] ${dir}: ${err?.message || err}`);
+      }
+      return;
+    }
     for (const entry of entries) {
       if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".next") continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -1604,12 +1629,34 @@ const listWorkspaceFiles = async (cwd) => {
   return result;
 };
 
+// Snapshot files with their mtimes so we can distinguish NEW vs MODIFIED vs unchanged.
+const snapshotWorkspaceMtimes = async (cwd) => {
+  const files = await listWorkspaceFiles(cwd);
+  const map = new Map();
+  await Promise.all(files.map(async (rel) => {
+    try {
+      const stat = await fs.stat(path.join(cwd, rel));
+      map.set(rel, stat.mtimeMs);
+    } catch { /* dropped between readdir and stat — ignore */ }
+  }));
+  return map;
+};
+
+const diffWorkspaceSnapshots = (before, after) => {
+  const changed = [];
+  for (const [rel, mtime] of after) {
+    const prev = before.get(rel);
+    if (prev === undefined || prev !== mtime) changed.push(rel);
+  }
+  return changed;
+};
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "graph-coding-gpt-prototype" });
 });
 
 app.get("/api/auth/status", (_req, res) => {
-  res.json(codexStatus());
+  res.json(codexStatus({ fresh: true }));
 });
 
 app.post("/api/workspace/open-folder", async (req, res) => {
@@ -1796,8 +1843,8 @@ app.post("/api/ai/build-order", (req, res) => {
     return;
   }
   try {
-    const order = deriveBuildOrder(diagram);
-    res.json({ ok: true, order });
+    const { order, cycles } = deriveBuildOrder(diagram);
+    res.json({ ok: true, order, cycles });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error) });
   }
@@ -1828,11 +1875,11 @@ app.post("/api/ai/build-node", async (req, res) => {
       return;
     }
 
-    const resolvedRoot = path.resolve(rootPath);
+    const resolvedRoot = ensureWithinRoot(rootPath, ".");
     const stats = await fs.stat(resolvedRoot);
     if (!stats.isDirectory()) throw new Error("rootPath must be a directory.");
 
-    const filesBefore = new Set(await listWorkspaceFiles(resolvedRoot));
+    const beforeSnapshot = await snapshotWorkspaceMtimes(resolvedRoot);
     const priorList = Array.isArray(previouslyBuilt) ? previouslyBuilt : [];
 
     let attempt = 0;
@@ -1867,8 +1914,8 @@ app.post("/api/ai/build-node", async (req, res) => {
       previousTestFailure = `${tests.failures.join("\n\n")}\n\n[stderr tail]\n${tests.stderr.slice(-2000)}`;
     }
 
-    const filesAfter = await listWorkspaceFiles(resolvedRoot);
-    const newOrModified = filesAfter.filter((f) => !filesBefore.has(f));
+    const afterSnapshot = await snapshotWorkspaceMtimes(resolvedRoot);
+    const newOrModified = diffWorkspaceSnapshots(beforeSnapshot, afterSnapshot);
 
     res.json({
       ok: true,
@@ -1896,7 +1943,7 @@ app.post("/api/build-state/save", async (req, res) => {
       res.status(400).json({ ok: false, error: "rootPath required" });
       return;
     }
-    const absolutePath = path.resolve(rootPath, BUILD_STATE_RELPATH);
+    const absolutePath = ensureWithinRoot(rootPath, BUILD_STATE_RELPATH);
     if (state === null || state === undefined) {
       await fs.unlink(absolutePath).catch((err) => {
         if (err && err.code !== "ENOENT") throw err;
@@ -1919,7 +1966,7 @@ app.post("/api/build-state/load", async (req, res) => {
       res.status(400).json({ ok: false, error: "rootPath required" });
       return;
     }
-    const absolutePath = path.resolve(rootPath, BUILD_STATE_RELPATH);
+    const absolutePath = ensureWithinRoot(rootPath, BUILD_STATE_RELPATH);
     try {
       const content = await fs.readFile(absolutePath, "utf8");
       res.json({ ok: true, state: JSON.parse(content) });

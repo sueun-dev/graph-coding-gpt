@@ -93,6 +93,12 @@ export default function App() {
   const [lastSpecMode, setLastSpecMode] = useState<"full" | "selection" | null>(null);
   const [buildLoopState, setBuildLoopState] = useState<BuildLoopState | null>(null);
   const buildAbortRef = useRef(false);
+  // Incremented every time a new build-loop run starts. Each loop captures the
+  // value at entry and bails if it changes — that way a late fetch response
+  // from an aborted previous run can't overwrite fresh state.
+  const buildGenRef = useRef(0);
+  // Active fetch controllers keyed by generation id — stopBuildLoop aborts them.
+  const buildAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const [workspaceName, setWorkspaceName] = useState("NO FOLDER OPENED");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [openedFiles, setOpenedFiles] = useState<WorkspaceFile[]>([]);
@@ -112,6 +118,10 @@ export default function App() {
   const setupPromptedKeyRef = useRef("");
   const diagramRequestIdRef = useRef(0);
   const [diagramHydrated, setDiagramHydrated] = useState(false);
+  // Tracks which diagramStorageKey the current {nodes, edges} state was loaded
+  // from. The save effect only writes when this matches the current key —
+  // prevents "wrote workspace A's diagram into workspace B" during switch.
+  const hydratedKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const loadAuth = async () => {
@@ -172,13 +182,19 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    // Invalidate the hydrated-key ref synchronously so the save effect's guard
+    // immediately rejects writes with the new key until we finish loading.
+    hydratedKeyRef.current = null;
     setDiagramHydrated(false);
+
+    const keyForThisLoad = diagramStorageKey;
 
     const fresh = createInitialFlow();
     const applyFresh = () => {
       if (cancelled) return;
       setNodes(fresh.nodes);
       setEdges(fresh.edges);
+      hydratedKeyRef.current = keyForThisLoad;
       setDiagramHydrated(true);
     };
     const applyParsed = (raw: string, key: string | null) => {
@@ -187,11 +203,16 @@ export default function App() {
         const parsed = JSON.parse(raw) as { nodes: DiagramNodeType[]; edges: DiagramEdge[] };
         setNodes(parsed.nodes);
         setEdges(parsed.edges);
-      } catch {
-        if (key) localStorage.removeItem(key);
+      } catch (err) {
+        console.warn("[diagram] failed to parse stored diagram; backing up and starting fresh:", err);
+        if (key) {
+          try { localStorage.setItem(`${key}:corrupt-${Date.now()}`, raw); } catch { /* quota */ }
+          localStorage.removeItem(key);
+        }
         setNodes(fresh.nodes);
         setEdges(fresh.edges);
       } finally {
+        hydratedKeyRef.current = keyForThisLoad;
         setDiagramHydrated(true);
       }
     };
@@ -235,6 +256,12 @@ export default function App() {
     if (!diagramHydrated || !diagramStorageKey) {
       return;
     }
+    // Guard against the cross-workspace race: if we haven't finished hydrating
+    // from `diagramStorageKey` yet, nodes/edges still belong to a previous
+    // workspace and writing them here would corrupt the new one.
+    if (hydratedKeyRef.current !== diagramStorageKey) {
+      return;
+    }
 
     const payload = JSON.stringify({ nodes, edges });
     localStorage.setItem(diagramStorageKey, payload);
@@ -250,7 +277,9 @@ export default function App() {
               { path: ".graphcoding/diagram.graph.json", content: payload },
             ],
           }),
-        }).catch(() => { /* non-fatal */ });
+        }).catch((err) => {
+          console.warn("[diagram] disk save failed:", err);
+        });
       }, 600);
       return () => clearTimeout(timer);
     }
@@ -726,6 +755,17 @@ export default function App() {
     }));
   };
 
+  // Quietly reload the native workspace — never let a tree refresh hang the
+  // build loop. Errors are logged to console and surfaced as a notice.
+  const safeReloadNativeWorkspace = async (rootPath: string) => {
+    try {
+      await reloadNativeWorkspace(rootPath);
+    } catch (err) {
+      console.warn("[build-loop] workspace reload failed:", err);
+      setWorkspaceNotice(`Workspace tree refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const startBuildLoop = async () => {
     if (workspaceMode !== "native" || !workspaceRootPath) {
       setWorkspaceNotice("Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다.");
@@ -736,8 +776,15 @@ export default function App() {
       setWorkspaceNotice("먼저 diagram을 생성하거나 확정하세요.");
       return;
     }
+    if (diagramResult?.source === "fallback") {
+      setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 GPT-5.4 응답을 먼저 받으세요.");
+      setActiveAuxPanel("ai");
+      return;
+    }
 
     buildAbortRef.current = false;
+    const myGen = ++buildGenRef.current;
+    const isCurrent = () => buildGenRef.current === myGen && !buildAbortRef.current;
     setActiveAuxPanel("build");
 
     let currentState = buildLoopState;
@@ -747,10 +794,14 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ diagram }),
       });
-      const orderData = (await orderResponse.json()) as { ok: boolean; order?: string[]; error?: string };
+      const orderData = (await orderResponse.json()) as { ok: boolean; order?: string[]; cycles?: boolean; error?: string };
+      if (!isCurrent()) return;
       if (!orderData.ok || !orderData.order) {
         setWorkspaceNotice(orderData.error || "빌드 순서를 계산할 수 없습니다.");
         return;
+      }
+      if (orderData.cycles) {
+        setWorkspaceNotice("Diagram에 사이클이 있어 일부 노드는 마지막에 위치 순서대로 빌드됩니다. 사이클을 정리하면 결과가 더 정확해집니다.");
       }
       const initialRecords: Record<string, NodeBuildRecord> = {};
       for (const id of orderData.order) {
@@ -778,7 +829,25 @@ export default function App() {
       setBuildLoopState(currentState);
       await persistBuildState(currentState);
     } else {
-      const resumed: BuildLoopState = { ...currentState, running: true, paused: false, failureReason: undefined };
+      // Resume: clear any stale "implementing" state from a killed prior run.
+      const cleanedRecords: Record<string, NodeBuildRecord> = {};
+      for (const id of currentState.order) {
+        const rec = currentState.records[id];
+        if (!rec) continue;
+        if (rec.status === "implementing" || rec.status === "testing" || rec.status === "fixing") {
+          cleanedRecords[id] = { ...rec, status: "pending", startedAt: undefined };
+        } else {
+          cleanedRecords[id] = rec;
+        }
+      }
+      const resumed: BuildLoopState = {
+        ...currentState,
+        records: cleanedRecords,
+        running: true,
+        paused: false,
+        currentNodeId: null,
+        failureReason: undefined,
+      };
       setBuildLoopState(resumed);
       currentState = resumed;
       await persistBuildState(resumed);
@@ -788,13 +857,13 @@ export default function App() {
     let firstPendingHit = true;
 
     for (let i = 0; i < order.length; i++) {
-      if (buildAbortRef.current) break;
+      if (!isCurrent()) return;
       const nodeId = order[i];
       const record = currentState.records[nodeId];
       if (record?.status === "done") continue;
       if (record?.status === "failed") {
         updateBuildState((prev) => ({ ...prev, running: false, paused: true, failureReason: `Node ${record.nodeTitle} previously failed.` }));
-        break;
+        return;
       }
 
       const previouslyBuilt = order
@@ -803,6 +872,7 @@ export default function App() {
         .filter((r) => r && r.status === "done")
         .map((r) => ({ id: r.nodeId, title: r.nodeTitle, shape: r.nodeShape, files: r.files }));
 
+      // Atomically transition: set currentNodeId + mark this node implementing.
       updateBuildState((prev) => ({
         ...prev,
         currentNodeId: nodeId,
@@ -817,6 +887,8 @@ export default function App() {
         },
       }));
 
+      const controller = new AbortController();
+      buildAbortControllersRef.current.add(controller);
       try {
         const response = await fetch("/api/ai/build-node", {
           method: "POST",
@@ -830,39 +902,72 @@ export default function App() {
             isFirst: firstPendingHit,
             maxRetries: 3,
           }),
+          signal: controller.signal,
         });
+        if (!isCurrent()) return;
         const data = (await response.json()) as BuildNodeResponse & { message?: string };
+        if (!isCurrent()) return;
         if (!response.ok || !data.ok) {
           throw new Error(data.error || data.message || "node build failed");
         }
         firstPendingHit = false;
 
         const finishedStatus: NodeBuildStatus = data.status;
-        updateNodeRecord(nodeId, {
+        const recordPatch: Partial<NodeBuildRecord> = {
           status: finishedStatus,
           attempts: data.attempts,
           files: data.files,
           lastOutput: data.output,
           testResult: data.testResult,
           finishedAt: new Date().toISOString(),
+        };
+        // Single atomic state update: record patch + top-level transition.
+        updateBuildState((prev) => {
+          const nextRec = { ...prev.records[nodeId], ...recordPatch };
+          const base = { ...prev, records: { ...prev.records, [nodeId]: nextRec } };
+          if (finishedStatus === "failed") {
+            return { ...base, running: false, paused: true, currentNodeId: null, failureReason: `Node ${record?.nodeTitle ?? nodeId.slice(0, 8)} failed after ${data.attempts} attempts.` };
+          }
+          return base;
         });
 
+        // CRITICAL: Keep the local snapshot in sync so the next iteration's
+        // previouslyBuilt reflects what was just built. Without this, codex
+        // for node N+1 gets (none) in its "Already-built nodes" context.
+        currentState = {
+          ...currentState,
+          records: { ...currentState.records, [nodeId]: { ...currentState.records[nodeId], ...recordPatch } },
+        };
+
         if (finishedStatus === "failed") {
-          updateBuildState((prev) => ({ ...prev, running: false, paused: true, currentNodeId: null, failureReason: `Node ${record?.nodeTitle ?? nodeId.slice(0, 8)} failed after ${data.attempts} attempts.` }));
-          await reloadNativeWorkspace(workspaceRootPath);
+          await safeReloadNativeWorkspace(workspaceRootPath);
           return;
         }
       } catch (caught) {
+        const aborted = caught instanceof DOMException && caught.name === "AbortError";
+        if (aborted || !isCurrent()) return;
         const message = caught instanceof Error ? caught.message : "node build failed";
-        updateNodeRecord(nodeId, { status: "failed", lastError: message, finishedAt: new Date().toISOString() });
-        updateBuildState((prev) => ({ ...prev, running: false, paused: true, currentNodeId: null, failureReason: message }));
-        await reloadNativeWorkspace(workspaceRootPath);
+        updateBuildState((prev) => ({
+          ...prev,
+          running: false,
+          paused: true,
+          currentNodeId: null,
+          failureReason: message,
+          records: {
+            ...prev.records,
+            [nodeId]: { ...prev.records[nodeId], status: "failed", lastError: message, finishedAt: new Date().toISOString() },
+          },
+        }));
+        await safeReloadNativeWorkspace(workspaceRootPath);
         return;
+      } finally {
+        buildAbortControllersRef.current.delete(controller);
       }
 
-      await reloadNativeWorkspace(workspaceRootPath);
+      await safeReloadNativeWorkspace(workspaceRootPath);
     }
 
+    if (!isCurrent()) return;
     updateBuildState((prev) => ({
       ...prev,
       running: false,
@@ -874,11 +979,17 @@ export default function App() {
 
   const stopBuildLoop = () => {
     buildAbortRef.current = true;
+    // Abort in-flight fetches so a late response can't overwrite paused state.
+    for (const c of buildAbortControllersRef.current) c.abort();
+    buildAbortControllersRef.current.clear();
     updateBuildState((prev) => ({ ...prev, running: false, paused: true }));
   };
 
   const resetBuildLoop = () => {
     buildAbortRef.current = true;
+    buildGenRef.current += 1; // invalidate any in-flight driver
+    for (const c of buildAbortControllersRef.current) c.abort();
+    buildAbortControllersRef.current.clear();
     setBuildLoopState(null);
     if (workspaceMode === "native" && workspaceRootPath) {
       void fetch("/api/build-state/save", {
@@ -1202,13 +1313,20 @@ export default function App() {
               <BuildLoopPanel
                 diagram={diagram}
                 state={buildLoopState}
-                canRun={workspaceMode === "native" && Boolean(workspaceRootPath) && diagram.nodes.length > 0}
+                canRun={
+                  workspaceMode === "native" &&
+                  Boolean(workspaceRootPath) &&
+                  diagram.nodes.length > 0 &&
+                  diagramResult?.source !== "fallback"
+                }
                 blockedReason={
                   workspaceMode !== "native" || !workspaceRootPath
                     ? "Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다."
                     : diagram.nodes.length === 0
                       ? "먼저 diagram을 만들거나 확정하세요."
-                      : ""
+                      : diagramResult?.source === "fallback"
+                        ? "현재 diagram은 fallback 결과입니다. 실제 GPT-5.4 응답을 받은 뒤 실행하세요."
+                        : ""
                 }
                 onStart={() => void startBuildLoop()}
                 onStop={stopBuildLoop}
