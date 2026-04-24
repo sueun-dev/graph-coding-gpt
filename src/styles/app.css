@@ -26,7 +26,7 @@ html,
 body,
 #root {
   margin: 0;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
 }
 
@@ -49,8 +49,9 @@ button {
 .ide-shell {
   display: grid;
   grid-template-rows: 34px minmax(0, 1fr) 24px;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .title-bar {
@@ -97,35 +98,14 @@ button {
 
 .workbench {
   display: grid;
-  grid-template-columns: 48px 300px minmax(0, 1fr) 360px;
+  grid-template-columns: 300px minmax(0, 1fr) 360px;
   min-height: 0;
   overflow: hidden;
 }
 
-.activity-bar {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 0;
-  background: var(--activitybar);
-  border-right: 1px solid var(--border);
-}
-
-.activity-icon {
-  width: 48px;
-  height: 48px;
-  border: 0;
-  background: transparent;
-  color: #858585;
-  font-size: 20px;
-  border-left: 2px solid transparent;
-}
-
-.activity-icon.is-active,
-.activity-icon:hover {
-  color: #ffffff;
-  border-left-color: var(--blue);
+/* Welcome state: no workspace loaded, auxiliary bar hidden — widen main. */
+.workbench.is-welcome {
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
 .explorer-panel,
@@ -341,11 +321,15 @@ button {
 
 .main-column {
   display: grid;
-  grid-template-rows: 35px minmax(0, 1fr) 290px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   background: var(--editor);
   overflow: hidden;
+}
+
+.bottom-panel {
+  height: 290px;
 }
 
 .editor-tabs {
@@ -550,6 +534,51 @@ button {
   border: 1px solid var(--border);
   background: #2a2d2e;
   font-size: 12px;
+}
+
+.runtime-card--cta {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.06);
+}
+
+.runtime-card--subtle {
+  background: #252526;
+  margin: 0;
+}
+
+.runtime-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #8a8a8a;
+}
+
+.runtime-optional {
+  margin: 0 12px 12px;
+  border: 1px solid var(--border);
+  background: #252526;
+  font-size: 12px;
+}
+
+.runtime-optional > summary {
+  list-style: none;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #bfbfbf;
+  user-select: none;
+}
+
+.runtime-optional > summary::before {
+  content: "▸ ";
+  color: #8a8a8a;
+}
+
+.runtime-optional[open] > summary::before {
+  content: "▾ ";
+}
+
+.runtime-optional[open] > summary {
+  color: #ffffff;
+  border-bottom: 1px solid var(--border);
 }
 
 .runtime-card p,

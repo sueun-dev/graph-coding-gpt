@@ -52,32 +52,33 @@ export default function RunPanel({
         </span>
       </div>
 
+      {/* STEP 1 — Brief → Diagram (primary path) */}
       <div className="runtime-card">
-        <h3>Brief to Diagram</h3>
-        <p>대충 적어도 됩니다. GPT-5.4가 이 텍스트를 읽고 기본 diagram을 먼저 구성합니다.</p>
+        <h3>1. Brief → Diagram</h3>
+        <p>만들고 싶은 앱이나 흐름을 대충 적으세요. GPT-5.4가 이 텍스트를 읽고 노드와 관계선을 생성합니다.</p>
         <textarea
           className="runtime-textarea"
           value={brief}
           onChange={handleBriefInput}
           rows={6}
-          placeholder="예: OAuth 로그인으로 연결되는 데스크톱 앱을 만들고 싶다. 사용자는 도식화를 그린 뒤 GPT-5.4가 기본 앱 구조와 구현 프롬프트를 생성해야 한다. 부분 구현과 테스트 루프도 필요하다."
+          placeholder="예: OAuth 로그인으로 연결되는 데스크톱 앱. 사용자는 도식화를 그리고 GPT-5.4가 앱 구조와 구현 프롬프트를 생성해야 한다. 부분 구현과 테스트 루프도 필요."
         />
         <div className="button-row">
           <button className="primary-button" onClick={() => onGenerateDiagram(hasDiagram ? "augment" : "replace")} disabled={diagramLoading}>
-            {hasDiagram ? "Refine Current Diagram" : "Generate First Diagram"}
+            {hasDiagram ? "Refine Diagram" : "Generate Diagram"}
           </button>
-          {hasDiagram ? (
-            <button className="secondary-button" onClick={() => onGenerateDiagram("replace")} disabled={diagramLoading}>
-              Replace Diagram
-            </button>
-          ) : null}
         </div>
+        {hasDiagram ? (
+          <p className="runtime-hint">
+            처음부터 다시 만들려면 사이드바 <strong>↺</strong>로 지운 뒤 실행하세요.
+          </p>
+        ) : null}
       </div>
 
       {diagramLoading && (
         <div className="result-card">
           <h3>Generating Diagram</h3>
-          <p>브리프를 읽고 도메인에 맞는 노드, 관계선, 구현 가능한 구조를 생성하고 있습니다. 정확성을 우선하므로 최대 몇 분까지 걸릴 수 있습니다.</p>
+          <p>브리프를 읽고 도메인에 맞는 노드, 관계선, 구현 가능한 구조를 생성하고 있습니다. 최대 몇 분까지 걸릴 수 있습니다.</p>
         </div>
       )}
 
@@ -97,13 +98,11 @@ export default function RunPanel({
           <p>{diagramResult.diagram.summary}</p>
           {diagramResult.source === "fallback" ? (
             <p className="result-warning">
-              현재 결과는 fallback diagram입니다. GPT-5.4 응답이 아니며, 서버에서 예외 또는 지연이 발생했을 때 내려오는 대체 결과입니다.
+              이 결과는 fallback diagram입니다 (GPT-5.4 응답이 아닌 대체 결과). Build Loop은 실제 응답을 받은 뒤에만 실행할 수 있습니다.
             </p>
           ) : null}
           {diagramResult.error ? (
-            <p className="result-warning">
-              이유: <strong>{diagramResult.error}</strong>
-            </p>
+            <p className="result-warning">이유: <strong>{diagramResult.error}</strong></p>
           ) : null}
           <div className="runtime-summary-grid runtime-summary-grid-tight">
             <div className="runtime-summary-cell">
@@ -118,78 +117,61 @@ export default function RunPanel({
         </div>
       )}
 
-      <div className="runtime-card">
-        <h3>Diagram to Spec</h3>
-        <p>
-          현재 범위: <strong>{scopeLabel}</strong>
-        </p>
-        <p>
-          코드를 쓰기 전에 확정된 diagram에서 스펙 문서를 뽑아냅니다. 코드 생성은 아래의 <strong>Build Loop</strong>에서 노드 단위로 진행합니다.
-        </p>
-        <div className="button-row">
-          <button className="primary-button" onClick={() => onGenerate("selection")} disabled={loading || diagram.nodes.length === 0}>
-            Generate Selection Spec
-          </button>
-          <button className="secondary-button" onClick={() => onGenerate("full")} disabled={loading || diagram.nodes.length === 0}>
-            Generate Full Spec
-          </button>
+      {/* STEP 2 — Build Loop hint (next action points user to the Build tab) */}
+      {hasDiagram && diagramResult?.source !== "fallback" ? (
+        <div className="runtime-card runtime-card--cta">
+          <h3>2. 다음 단계</h3>
+          <p>
+            노드를 다 편집했으면 우측 상단 <strong>BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 노드 단위로 코드 + 테스트를 실제로 작성합니다.
+          </p>
         </div>
-      </div>
+      ) : null}
 
-      <div className="runtime-meta">
-        <div>
-          <span className="meta-label">Codex</span>
-          <strong>{auth?.codexInstalled ? "installed" : "missing"}</strong>
-        </div>
-        <div>
-          <span className="meta-label">Login</span>
-          <strong>{auth?.codexAuthenticated ? "ready" : "not ready"}</strong>
-        </div>
-        <div>
-          <span className="meta-label">Detail</span>
-          <strong>{auth?.detail ?? "checking..."}</strong>
-        </div>
-      </div>
-
-      {loading && (
-        <div className="result-card">
-          <h3>Running</h3>
-          <p>Codex에 도식화와 범위를 전달해 시스템 설계 문서를 만들고 있습니다.</p>
-        </div>
-      )}
-
-      {error && (
-        <div className="result-card error-card">
-          <h3>오류</h3>
-          <p>{error}</p>
-        </div>
-      )}
-
-      {result && (
-        <div className="result-stack runtime-compact">
-          <div className="result-card">
-            <div className="result-card__header">
-              <h3>{result.spec.title}</h3>
-              <span className="result-source">{result.source}</span>
-            </div>
-            <p>{result.spec.overview}</p>
+      {/* OPTIONAL — Spec generation (collapsed; Build Loop does not require it) */}
+      <details className="runtime-optional">
+        <summary>부가: Spec 문서 만들기 (선택)</summary>
+        <div className="runtime-card runtime-card--subtle">
+          <p>
+            확정된 diagram에서 읽기 좋은 스펙 문서를 뽑습니다. <strong>Build Loop은 이 문서를 읽지 않습니다</strong> — 문서화/검토용입니다.
+          </p>
+          <p>현재 범위: <strong>{scopeLabel}</strong></p>
+          <div className="button-row">
+            <button className="primary-button" onClick={() => onGenerate("selection")} disabled={loading || !hasDiagram}>
+              Selection Spec
+            </button>
+            <button className="secondary-button" onClick={() => onGenerate("full")} disabled={loading || !hasDiagram}>
+              Full Spec
+            </button>
           </div>
-          <div className="runtime-summary-grid">
-            <div className="runtime-summary-cell">
-              <span className="meta-label">Architecture</span>
-              <strong>{result.spec.architecture.length}</strong>
+          {loading && <p className="runtime-hint">Codex에 도식화와 범위를 전달해 스펙 문서를 만들고 있습니다.</p>}
+          {error && <p className="result-warning">{error}</p>}
+          {result && (
+            <div className="result-stack runtime-compact">
+              <div className="result-card">
+                <div className="result-card__header">
+                  <h3>{result.spec.title}</h3>
+                  <span className="result-source">{result.source}</span>
+                </div>
+                <p>{result.spec.overview}</p>
+              </div>
+              <div className="runtime-summary-grid">
+                <div className="runtime-summary-cell">
+                  <span className="meta-label">Architecture</span>
+                  <strong>{result.spec.architecture.length}</strong>
+                </div>
+                <div className="runtime-summary-cell">
+                  <span className="meta-label">Execution</span>
+                  <strong>{result.spec.executionPlan.length}</strong>
+                </div>
+                <div className="runtime-summary-cell">
+                  <span className="meta-label">Tests</span>
+                  <strong>{result.spec.testPlan.length}</strong>
+                </div>
+              </div>
             </div>
-            <div className="runtime-summary-cell">
-              <span className="meta-label">Execution</span>
-              <strong>{result.spec.executionPlan.length}</strong>
-            </div>
-            <div className="runtime-summary-cell">
-              <span className="meta-label">Tests</span>
-              <strong>{result.spec.testPlan.length}</strong>
-            </div>
-          </div>
+          )}
         </div>
-      )}
+      </details>
     </section>
   );
 }

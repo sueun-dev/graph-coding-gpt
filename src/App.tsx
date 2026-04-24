@@ -1213,36 +1213,13 @@ export default function App() {
         </div>
       </header>
 
-      <div className="workbench">
-        <nav className="activity-bar">
-          <button className="activity-icon is-active" title="Explorer">
-            ⛶
-          </button>
-          <button className={`activity-icon ${activeEditor === "diagram" ? "is-active" : ""}`} title="Diagram" onClick={() => setActiveEditor("diagram")}>
-            ◎
-          </button>
-          <button className={`activity-icon ${activeEditor === "spec" ? "is-active" : ""}`} title="Specification" onClick={() => setActiveEditor("spec")}>
-            ≣
-          </button>
-          <button className={`activity-icon ${activeAuxPanel === "ai" ? "is-active" : ""}`} title="AI" onClick={() => setActiveAuxPanel("ai")}>
-            ✦
-          </button>
-          <button className={`activity-icon ${activeAuxPanel === "inspector" ? "is-active" : ""}`} title="Inspector" onClick={() => setActiveAuxPanel("inspector")}>
-            ☰
-          </button>
-          <button className={`activity-icon ${activeAuxPanel === "build" ? "is-active" : ""}`} title="Build Loop" onClick={() => setActiveAuxPanel("build")}>
-            ⚒
-          </button>
-        </nav>
-
+      <div className={`workbench ${workspaceFiles.length === 0 ? "is-welcome" : ""}`}>
         <ExplorerPanel
           workspaceName={workspaceName}
           workspaceTree={workspaceTree}
           editorTabs={editorTabs}
           activeEditor={activeEditor}
           hasWorkspace={workspaceFiles.length > 0}
-          onOpenFolder={() => void handleOpenFolder()}
-          onFolderImportChange={handleFolderInputChange}
           onSelectEditor={setActiveEditor}
           onSelectFile={handleSelectWorkspaceFile}
           onAddNode={addNodeOfType}
@@ -1252,26 +1229,31 @@ export default function App() {
         />
 
         <section className="main-column">
-          <div className="editor-tabs">
-            {editorTabs.map((tab) => (
-              <div key={tab.id} className={`editor-tab ${activeEditor === tab.id ? "is-active" : ""}`}>
-                <button className="editor-tab__select" onClick={() => setActiveEditor(tab.id)}>
-                  {tab.label}
-                </button>
-                {tab.closeable ? (
-                  <button className="editor-tab__close" onClick={() => closeEditor(tab.id)} title="Close Tab">
-                    ×
+          {workspaceFiles.length > 0 ? (
+            <div className="editor-tabs">
+              {editorTabs.map((tab) => (
+                <div key={tab.id} className={`editor-tab ${activeEditor === tab.id ? "is-active" : ""}`}>
+                  <button className="editor-tab__select" onClick={() => setActiveEditor(tab.id)}>
+                    {tab.label}
                   </button>
-                ) : null}
-              </div>
-            ))}
-          </div>
+                  {tab.closeable ? (
+                    <button className="editor-tab__close" onClick={() => closeEditor(tab.id)} title="Close Tab">
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           <div className="editor-surface">{renderActiveEditor()}</div>
 
-          <BottomPanel diagram={diagram} result={result} error={error} loading={loading} />
+          {workspaceFiles.length > 0 ? (
+            <BottomPanel diagram={diagram} result={result} error={error} loading={loading} />
+          ) : null}
         </section>
 
+        {workspaceFiles.length > 0 ? (
         <aside className="auxiliary-bar">
           <div className="auxiliary-tabs">
             <button className={activeAuxPanel === "ai" ? "is-active" : ""} onClick={() => setActiveAuxPanel("ai")}>
@@ -1335,6 +1317,7 @@ export default function App() {
             )}
           </div>
         </aside>
+        ) : null}
       </div>
 
       <footer className="status-bar">

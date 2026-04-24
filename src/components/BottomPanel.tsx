@@ -11,7 +11,7 @@ type BottomPanelProps = {
 type BottomTab = "spec" | "buildPrompt" | "iterationPrompt" | "graph";
 
 export default function BottomPanel({ diagram, result, error, loading }: BottomPanelProps) {
-  const [activeTab, setActiveTab] = useState<BottomTab>("spec");
+  const [activeTab, setActiveTab] = useState<BottomTab>("graph");
 
   const body = useMemo(() => {
     if (loading) {
@@ -72,21 +72,27 @@ export default function BottomPanel({ diagram, result, error, loading }: BottomP
     );
   }, [activeTab, diagram, error, loading, result]);
 
+  const hasSpecTabs = Boolean(result) || loading;
+
   return (
     <section className="bottom-panel">
       <div className="bottom-tabs">
-        <button className={activeTab === "spec" ? "is-active" : ""} onClick={() => setActiveTab("spec")}>
-          SPECIFICATION
-        </button>
-        <button className={activeTab === "buildPrompt" ? "is-active" : ""} onClick={() => setActiveTab("buildPrompt")}>
-          BUILD PROMPT
-        </button>
-        <button className={activeTab === "iterationPrompt" ? "is-active" : ""} onClick={() => setActiveTab("iterationPrompt")}>
-          ITERATION
-        </button>
         <button className={activeTab === "graph" ? "is-active" : ""} onClick={() => setActiveTab("graph")}>
           GRAPH JSON
         </button>
+        {hasSpecTabs ? (
+          <>
+            <button className={activeTab === "spec" ? "is-active" : ""} onClick={() => setActiveTab("spec")}>
+              SPECIFICATION
+            </button>
+            <button className={activeTab === "buildPrompt" ? "is-active" : ""} onClick={() => setActiveTab("buildPrompt")}>
+              BUILD PROMPT
+            </button>
+            <button className={activeTab === "iterationPrompt" ? "is-active" : ""} onClick={() => setActiveTab("iterationPrompt")}>
+              ITERATION
+            </button>
+          </>
+        ) : null}
       </div>
       <div className="bottom-body">{body}</div>
     </section>
