@@ -227,23 +227,45 @@ export type EditorTab =
 export type HarnessPresetId = "saas-web" | "api-service" | "agent-tool" | "desktop-app" | "mobile-app";
 export type HarnessSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
+export type HarnessThemeMode = "dark" | "light" | "auto";
+export type HarnessRadiusScale = "sharp" | "rounded" | "pill";
+export type HarnessDensity = "compact" | "comfortable";
+
+export type HarnessDesign = {
+  theme: HarnessThemeMode;
+  referenceStyle: string;
+  palette: {
+    primary: string;
+    accent: string;
+    background: string;
+    foreground: string;
+    muted: string;
+    error: string;
+  };
+  radius: HarnessRadiusScale;
+  density: HarnessDensity;
+  typography: {
+    heading: string;
+    body: string;
+    mono: string;
+  };
+  notes: string;
+};
+
 export type HarnessConfig = {
   version: 1;
   presetId: HarnessPresetId;
   projectName: string;
-  projectGoal: string;
   stack: {
     appType: string;
     frontend: string;
     backend: string;
     runtime: string;
     packageManager: string;
-    styling: string;
     database: string;
     auth: string;
   };
   agent: {
-    primaryModel: "gpt-5.4";
     reasoningEffort: "medium" | "high" | "xhigh";
     sandbox: HarnessSandboxMode;
     tools: {
@@ -263,6 +285,7 @@ export type HarnessConfig = {
     requireTestsBeforeDone: boolean;
     allowStubsOutsideScope: boolean;
   };
+  design: HarnessDesign;
   paths: {
     configDir: string;
     artifactDir: string;

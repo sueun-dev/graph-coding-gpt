@@ -803,7 +803,6 @@ const buildCryptoTrackerFallback = (brief, harness, errorMessage = "") => {
 
 const buildAgentDiagramFallback = (brief, harness, errorMessage = "") => {
   const korean = isKoreanText(brief);
-  const runtimeNotes = harness?.agent?.primaryModel || "gpt-5.4";
 
   return {
     title: korean ? "AI 도식화 기반 앱 생성 워크스페이스" : "AI Diagram-to-App Workspace",
@@ -844,7 +843,7 @@ const buildAgentDiagramFallback = (brief, harness, errorMessage = "") => {
         behavior: korean ? "도메인, 화면, 서비스, 저장소, 외부 연동을 추론해 노드와 선을 만든다" : "Infer screens, services, persistence, and integrations",
         inputs: korean ? "brief, harness, 현재 diagram" : "brief, harness, and current diagram",
         outputs: korean ? "기본 diagram blueprint" : "diagram blueprint",
-        notes: runtimeNotes,
+        notes: "gpt-5.4",
         testHint: korean ? "짧은 brief에도 도메인 고유 명사가 살아 있는지 본다" : "Verify domain-specific nouns survive short prompts",
         status: "planned",
       },
@@ -1028,6 +1027,8 @@ Rules:
 - Preserve named products, vendors, APIs, external systems, and domain nouns from the brief whenever they are architecturally relevant.
 - If the brief is short, infer the likely concrete modules instead of falling back to generic placeholders.
 - Never use placeholder titles like "핵심 사용자 화면" or "핵심 도메인 처리" unless the brief itself is too vague to infer anything better.
+- The diagram is a LOGIC and STRUCTURE model. Do not encode visual design, colors, spacing, typography, or theme details into node titles, descriptions, or notes.
+- Visual design belongs to harness.design and is applied later by the spec and build phases. Ignore harness.design when shaping the diagram.
 - Match the language of the user's brief for titles and descriptions.
 - Treat the harness as implementation environment guidance, not as proof that the user explicitly asked for product features.
 - Do not promote inferred auth, profile locking, session restore, export, notifications, or offline behavior into mandatory core-flow nodes unless the brief clearly asks for them.
@@ -1053,7 +1054,7 @@ User brief:
 ${brief}
 `.trim();
 
-const buildPromptFromDiagram = (diagram, scope) => {
+const buildPromptFromDiagram = (diagram, scope, harness) => {
   const scopedNodes =
     scope.mode === "selection"
       ? diagram.nodes.filter((node) => scope.nodeIds.includes(node.id))
@@ -1097,6 +1098,21 @@ Full diagram for context:
 ${JSON.stringify(diagram, null, 2)}
 `.trim();
 
+  const design = harness && harness.design ? harness.design : null;
+  const designBlock = design
+    ? `
+Design Tokens (project-wide visual system — apply to every Screen/UI node during implementation):
+${JSON.stringify(design, null, 2)}
+
+Design application rules:
+- The diagram itself is intentionally design-free. The design tokens above are the single source of visual truth.
+- For every Screen/UI node, the spec must describe how the UI uses these tokens: palette (primary/accent/bg/fg/muted/error), radius, density, typography, theme mode, and the referenceStyle vibe.
+- The spec must instruct the build phase to (1) configure Tailwind theme.extend with the palette and typography, (2) emit CSS custom properties for the palette in globals.css, (3) apply className tokens consistently across components.
+- Honor design.notes verbatim when present — treat it as additional visual guidance from the user.
+- Non-UI nodes (Process/API/Service/Database/etc.) ignore design tokens.
+`.trim()
+    : "";
+
   return `
 You are a staff engineer and product architect.
 Transform the following programming diagram into a rigorous implementation specification.
@@ -1112,8 +1128,8 @@ Rules:
 
 Output requirements:
 - Return only valid JSON matching the provided schema.
-- The buildPrompt must instruct a coding agent to build the selected system exactly from the diagram.
-- The iterationPrompt must instruct the coding agent to build only the current scope and leave the rest stubbed but testable.
+- The buildPrompt must instruct a coding agent to build the selected system exactly from the diagram, including the design tokens application for UI nodes.
+- The iterationPrompt must instruct the coding agent to build only the current scope and leave the rest stubbed but testable, while still applying the design tokens to any UI within that scope.
 
 Scope:
 ${JSON.stringify(scope, null, 2)}
@@ -1125,6 +1141,8 @@ Scoped internal edges:
 ${JSON.stringify(internalEdges, null, 2)}
 
 ${contextBlock}
+
+${designBlock}
 `.trim();
 };
 
@@ -1233,7 +1251,7 @@ const fallbackDiagram = (brief, diagram, harness, strategy, errorMessage = "") =
   return buildGenericFallback(brief, harness, errorMessage);
 };
 
-const runCodexStructuredOutput = async ({ prompt, schema, name, timeoutMs = 180000 }) => {
+const runCodexStructuredOutput = async ({ prompt, schema, name, timeoutMs = 600000 }) => {
   await ensureRuntimeDirs();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1310,8 +1328,8 @@ const runCodexStructuredOutput = async ({ prompt, schema, name, timeoutMs = 1800
   };
 };
 
-const runCodexSpec = async (diagram, scope) => {
-  const prompt = buildPromptFromDiagram(diagram, scope);
+const runCodexSpec = async (diagram, scope, harness) => {
+  const prompt = buildPromptFromDiagram(diagram, scope, harness);
   return runCodexStructuredOutput({
     prompt,
     schema: SPEC_SCHEMA,
@@ -1319,7 +1337,25 @@ const runCodexSpec = async (diagram, scope) => {
   });
 };
 
-const buildWorkspaceExecutionPrompt = (prompt, harness, mode) => `
+const buildWorkspaceExecutionPrompt = (prompt, harness, mode) => {
+  const design = harness && harness.design ? harness.design : null;
+  const designBlock = design
+    ? `
+Design Tokens (authoritative — wire these into the codebase, do not re-invent):
+${JSON.stringify(design, null, 2)}
+
+Design wiring requirements:
+- Detect the styling stack from the package.json dependencies and harness.stack.frontend (e.g. Tailwind v3/v4, CSS Modules, vanilla-extract).
+- If Tailwind is used: read .graphcoding/design-tokens.json (if present) or the tokens above, then update tailwind.config.{js,ts,mjs} so theme.extend.colors maps {primary, accent, background, foreground, muted, error} and theme.extend.fontFamily uses design.typography. Use the correct Tailwind major version syntax (v3 uses @tailwind directives in globals.css; v4 uses @import "tailwindcss").
+- Emit CSS custom properties for the palette at :root in the global stylesheet (globals.css or equivalent) and switch dark/light via design.theme.
+- In every UI component, use className utilities that reference the token names (e.g. bg-background, text-foreground, bg-primary, rounded-{radius}). Do not hardcode raw color values in components.
+- radius="sharp" => rounded-none; radius="rounded" => rounded-xl; radius="pill" => rounded-full. density="compact" => tighter paddings; density="comfortable" => generous paddings.
+- Apply the referenceStyle as qualitative direction (layout feel, spacing rhythm, micro-interactions) and honor design.notes verbatim when present.
+- Verify visually-relevant components actually import and use token classNames; grep for hardcoded hex colors before declaring done.
+`.trim()
+    : "";
+
+  return `
 You are executing a coding task directly in the current working directory.
 
 Rules:
@@ -1336,9 +1372,12 @@ ${mode}
 Harness:
 ${JSON.stringify(harness ?? null, null, 2)}
 
+${designBlock}
+
 Implementation task:
 ${prompt}
 `.trim();
+};
 
 const runCodexWorkspaceBuild = async ({ prompt, cwd, mode, timeoutMs = 900000 }) => {
   await ensureRuntimeDirs();
@@ -1524,7 +1563,7 @@ app.post("/api/ai/diagram", async (req, res) => {
       prompt,
       schema: DIAGRAM_SCHEMA,
       name: "diagram",
-      timeoutMs: 180000,
+      timeoutMs: 600000,
     });
     const sanitized = sanitizeDiagramBlueprint(parsed, brief, harness);
 
@@ -1554,7 +1593,7 @@ app.post("/api/ai/diagram", async (req, res) => {
 });
 
 app.post("/api/ai/spec", async (req, res) => {
-  const { diagram, requestedMode } = req.body ?? {};
+  const { diagram, requestedMode, harness } = req.body ?? {};
 
   if (!diagram || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) {
     res.status(400).json({
@@ -1580,7 +1619,7 @@ app.post("/api/ai/spec", async (req, res) => {
       return;
     }
 
-    const { parsed, raw } = await runCodexSpec(diagram, scope);
+    const { parsed, raw } = await runCodexSpec(diagram, scope, harness);
     res.json({
       ok: true,
       source: "codex",

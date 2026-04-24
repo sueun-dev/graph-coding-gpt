@@ -1,6 +1,38 @@
 import { useEffect, useState } from "react";
 import { HARNESS_PRESETS, cloneHarnessConfig, createHarnessFromPreset, getHarnessPreset } from "../lib/harness";
-import type { HarnessConfig, HarnessPresetId } from "../lib/types";
+import type { HarnessConfig, HarnessDesign, HarnessPresetId } from "../lib/types";
+
+const FALLBACK_DESIGN: HarnessDesign = {
+  theme: "dark",
+  referenceStyle: "Clean minimal product UI",
+  palette: {
+    primary: "#6366f1",
+    accent: "#f59e0b",
+    background: "#0b0b0f",
+    foreground: "#f5f5f5",
+    muted: "#1f2024",
+    error: "#ef4444",
+  },
+  radius: "rounded",
+  density: "comfortable",
+  typography: { heading: "Inter", body: "Inter", mono: "JetBrains Mono" },
+  notes: "",
+};
+
+const ensureDesign = (config: HarnessConfig): HarnessConfig => {
+  if (config.design && config.design.palette && config.design.typography) {
+    return config;
+  }
+  return {
+    ...config,
+    design: {
+      ...FALLBACK_DESIGN,
+      ...(config.design ?? {}),
+      palette: { ...FALLBACK_DESIGN.palette, ...(config.design?.palette ?? {}) },
+      typography: { ...FALLBACK_DESIGN.typography, ...(config.design?.typography ?? {}) },
+    },
+  };
+};
 
 type WorkspaceSetupModalProps = {
   open: boolean;
@@ -12,7 +44,7 @@ type WorkspaceSetupModalProps = {
   onSave: (config: HarnessConfig) => Promise<void> | void;
 };
 
-type Step = "preset" | "advanced";
+type Step = "preset" | "advanced" | "design";
 
 export default function WorkspaceSetupModal({
   open,
@@ -25,7 +57,7 @@ export default function WorkspaceSetupModal({
 }: WorkspaceSetupModalProps) {
   const [step, setStep] = useState<Step>("preset");
   const [config, setConfig] = useState<HarnessConfig>(() =>
-    existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace"),
+    ensureDesign(existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace")),
   );
   const [saving, setSaving] = useState(false);
 
@@ -35,7 +67,7 @@ export default function WorkspaceSetupModal({
     }
 
     setStep("preset");
-    setConfig(existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace"));
+    setConfig(ensureDesign(existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace")));
   }, [existingConfig, initialPreset, open, workspaceName]);
 
   if (!open) {
@@ -82,12 +114,47 @@ export default function WorkspaceSetupModal({
     }));
   };
 
+  const updateDesign = <K extends keyof HarnessConfig["design"]>(field: K, value: HarnessConfig["design"][K]) => {
+    setConfig((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        [field]: value,
+      },
+    }));
+  };
+
+  const updateDesignPalette = (field: keyof HarnessConfig["design"]["palette"], value: string) => {
+    setConfig((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        palette: {
+          ...current.design.palette,
+          [field]: value,
+        },
+      },
+    }));
+  };
+
+  const updateDesignTypography = (field: keyof HarnessConfig["design"]["typography"], value: string) => {
+    setConfig((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        typography: {
+          ...current.design.typography,
+          [field]: value,
+        },
+      },
+    }));
+  };
+
   const applyPreset = (presetId: HarnessPresetId) => {
-    const presetConfig = createHarnessFromPreset(presetId, config.projectName || workspaceName || "New Workspace", config.projectGoal);
+    const presetConfig = createHarnessFromPreset(presetId, config.projectName || workspaceName || "New Workspace");
     setConfig((current) => ({
       ...presetConfig,
       projectName: current.projectName || presetConfig.projectName,
-      projectGoal: current.projectGoal || presetConfig.projectGoal,
     }));
   };
 
@@ -128,18 +195,17 @@ export default function WorkspaceSetupModal({
           <button className={step === "advanced" ? "is-active" : ""} onClick={() => setStep("advanced")}>
             2. Advanced
           </button>
+          <button className={step === "design" ? "is-active" : ""} onClick={() => setStep("design")}>
+            3. Design
+          </button>
         </div>
 
-        {step === "preset" ? (
+        {step === "preset" && (
           <div className="setup-body">
             <section className="setup-section">
               <label className="setup-field">
                 <span>Project Name</span>
                 <input value={config.projectName} onChange={(event) => updateConfig("projectName", event.target.value)} />
-              </label>
-              <label className="setup-field">
-                <span>Project Goal</span>
-                <textarea value={config.projectGoal} rows={3} onChange={(event) => updateConfig("projectGoal", event.target.value)} />
               </label>
             </section>
 
@@ -181,7 +247,9 @@ export default function WorkspaceSetupModal({
               </div>
             </section>
           </div>
-        ) : (
+        )}
+
+        {step === "advanced" && (
           <div className="setup-body setup-body-advanced">
             <section className="setup-section">
               <h3>Stack</h3>
@@ -205,10 +273,6 @@ export default function WorkspaceSetupModal({
                 <label className="setup-field">
                   <span>Package Manager</span>
                   <input value={config.stack.packageManager} onChange={(event) => updateStack("packageManager", event.target.value)} />
-                </label>
-                <label className="setup-field">
-                  <span>Styling</span>
-                  <input value={config.stack.styling} onChange={(event) => updateStack("styling", event.target.value)} />
                 </label>
                 <label className="setup-field">
                   <span>Database</span>
@@ -288,22 +352,125 @@ export default function WorkspaceSetupModal({
           </div>
         )}
 
+        {step === "design" && (
+          <div className="setup-body setup-body-advanced">
+            <section className="setup-section">
+              <h3>Theme &amp; Reference</h3>
+              <div className="setup-form-grid">
+                <label className="setup-field">
+                  <span>Theme</span>
+                  <select value={config.design.theme} onChange={(event) => updateDesign("theme", event.target.value as HarnessConfig["design"]["theme"])}>
+                    <option value="dark">dark</option>
+                    <option value="light">light</option>
+                    <option value="auto">auto</option>
+                  </select>
+                </label>
+                <label className="setup-field">
+                  <span>Radius</span>
+                  <select value={config.design.radius} onChange={(event) => updateDesign("radius", event.target.value as HarnessConfig["design"]["radius"])}>
+                    <option value="sharp">sharp</option>
+                    <option value="rounded">rounded</option>
+                    <option value="pill">pill</option>
+                  </select>
+                </label>
+                <label className="setup-field">
+                  <span>Density</span>
+                  <select value={config.design.density} onChange={(event) => updateDesign("density", event.target.value as HarnessConfig["design"]["density"])}>
+                    <option value="compact">compact</option>
+                    <option value="comfortable">comfortable</option>
+                  </select>
+                </label>
+                <label className="setup-field setup-field-wide">
+                  <span>Reference Style</span>
+                  <input
+                    value={config.design.referenceStyle}
+                    placeholder='예: "iOS calculator", "Linear dashboard", "Brutalist neo-monochrome"'
+                    onChange={(event) => updateDesign("referenceStyle", event.target.value)}
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section className="setup-section">
+              <h3>Palette</h3>
+              <div className="setup-form-grid setup-palette-grid">
+                {(["primary", "accent", "background", "foreground", "muted", "error"] as const).map((key) => (
+                  <label key={key} className="setup-field setup-palette-field">
+                    <span>{key}</span>
+                    <div className="setup-palette-row">
+                      <input
+                        type="color"
+                        value={config.design.palette[key]}
+                        onChange={(event) => updateDesignPalette(key, event.target.value)}
+                      />
+                      <input
+                        type="text"
+                        value={config.design.palette[key]}
+                        onChange={(event) => updateDesignPalette(key, event.target.value)}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </section>
+
+            <section className="setup-section">
+              <h3>Typography</h3>
+              <div className="setup-form-grid">
+                <label className="setup-field">
+                  <span>Heading</span>
+                  <input value={config.design.typography.heading} onChange={(event) => updateDesignTypography("heading", event.target.value)} />
+                </label>
+                <label className="setup-field">
+                  <span>Body</span>
+                  <input value={config.design.typography.body} onChange={(event) => updateDesignTypography("body", event.target.value)} />
+                </label>
+                <label className="setup-field">
+                  <span>Mono</span>
+                  <input value={config.design.typography.mono} onChange={(event) => updateDesignTypography("mono", event.target.value)} />
+                </label>
+              </div>
+            </section>
+
+            <section className="setup-section">
+              <h3>Design Notes</h3>
+              <label className="setup-field setup-field-wide">
+                <span>Extra design guidance (optional)</span>
+                <textarea
+                  rows={3}
+                  placeholder='예: "버튼은 press 시 scale 0.96, Display는 우측 정렬 5rem, 네온 글로우"'
+                  value={config.design.notes}
+                  onChange={(event) => updateDesign("notes", event.target.value)}
+                />
+              </label>
+            </section>
+          </div>
+        )}
+
         <div className="setup-modal__footer">
           <div className="setup-footer-copy">
             Harness files to save:
             <code>.graphcoding/harness.json</code>
             <code>.graphcoding/project-profile.md</code>
             <code>.graphcoding/build-policy.json</code>
+            <code>.graphcoding/design-tokens.json</code>
           </div>
           <div className="setup-footer-actions">
             <button className="ghost-button compact-button" onClick={onClose}>
               Cancel
             </button>
-            {step === "preset" ? (
+            {step === "preset" && (
               <button className="primary-button compact-button" onClick={() => setStep("advanced")}>
                 Next
               </button>
-            ) : (
+            )}
+            {step === "advanced" && (
+              <button className="primary-button compact-button" onClick={() => setStep("design")}>
+                Next
+              </button>
+            )}
+            {step === "design" && (
               <button className="primary-button compact-button" onClick={save} disabled={saving}>
                 {saving ? "Saving..." : "Save Harness"}
               </button>

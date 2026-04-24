@@ -9,6 +9,7 @@ type ExplorerPanelProps = {
   workspaceTree: WorkspaceTreeNode[];
   editorTabs: EditorTab[];
   activeEditor: string;
+  hasWorkspace: boolean;
   onOpenFolder: () => void;
   onFolderImportChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSelectEditor: (id: string) => void;
@@ -60,6 +61,7 @@ export default function ExplorerPanel({
   workspaceTree,
   editorTabs,
   activeEditor,
+  hasWorkspace,
   onOpenFolder,
   onFolderImportChange,
   onSelectEditor,
@@ -95,56 +97,65 @@ export default function ExplorerPanel({
       </div>
 
       <div className="sidebar-section">
-        <div className="sidebar-subheading">WORKSPACE SETUP</div>
-        <div className="workspace-actions">
-          <button className="primary-button compact-button" onClick={onOpenSetup}>
-            {harnessConfig ? "Edit Harness" : "Create Harness"}
-          </button>
-        </div>
-        {harnessConfig ? (
-          <div className="harness-brief">
-            <strong>{getHarnessPreset(harnessConfig.presetId).label}</strong>
-            <span>{harnessConfig.stack.frontend}</span>
-            <span>{harnessConfig.agent.sandbox}</span>
-          </div>
+        <div className="sidebar-subheading">WORKSPACE</div>
+        {hasWorkspace ? (
+          <>
+            <div className="workspace-root">{workspaceName}</div>
+            <div className="tree-list">
+              {workspaceTree.length > 0 ? (
+                workspaceTree.map((node) => <TreeItem key={node.id} node={node} depth={0} activeEditor={activeEditor} onSelectFile={onSelectFile} />)
+              ) : (
+                <p className="sidebar-empty">빈 폴더입니다.</p>
+              )}
+            </div>
+          </>
         ) : (
-          <p className="sidebar-empty">Harness를 먼저 만들면 이후 도식화와 빌드 프롬프트가 더 안정적으로 고정됩니다.</p>
+          <div className="workspace-actions">
+            <button className="primary-button compact-button" onClick={onOpenFolder}>
+              Open Folder
+            </button>
+            <FolderOpenButton label="Import" variant="ghost" onChange={onFolderImportChange} />
+          </div>
         )}
       </div>
 
-      <div className="sidebar-section">
-        <div className="sidebar-subheading">WORKSPACE</div>
-        <div className="workspace-actions">
-          <button className="primary-button compact-button" onClick={onOpenFolder}>
-            Open Folder
-          </button>
-          <FolderOpenButton label="Import" variant="ghost" onChange={onFolderImportChange} />
-        </div>
-        <div className="workspace-root">{workspaceName}</div>
-        <div className="tree-list">
-          {workspaceTree.length > 0 ? (
-            workspaceTree.map((node) => <TreeItem key={node.id} node={node} depth={0} activeEditor={activeEditor} onSelectFile={onSelectFile} />)
+      {hasWorkspace && (
+        <div className="sidebar-section">
+          <div className="sidebar-subheading">HARNESS</div>
+          <div className="workspace-actions">
+            <button className="primary-button compact-button" onClick={onOpenSetup}>
+              {harnessConfig ? "Edit Harness" : "Create Harness"}
+            </button>
+          </div>
+          {harnessConfig ? (
+            <div className="harness-brief">
+              <strong>{getHarnessPreset(harnessConfig.presetId).label}</strong>
+              <span>{harnessConfig.stack.frontend}</span>
+              <span>{harnessConfig.agent.sandbox}</span>
+            </div>
           ) : (
-            <p className="sidebar-empty">폴더를 열면 VS Code처럼 파일 트리를 탐색할 수 있습니다.</p>
+            <p className="sidebar-empty">Harness를 먼저 만들면 diagram/spec/build가 더 안정적으로 고정됩니다.</p>
           )}
         </div>
-      </div>
+      )}
 
-      <div className="sidebar-section">
-        <div className="sidebar-subheading">DIAGRAM BLOCKS</div>
-        <div className="block-list">
-          {SHAPE_LIBRARY.map((shape) => (
-            <button key={shape.type} className="block-item" onClick={() => onAddNode(shape.type)}>
-              <span className="block-swatch" style={{ background: shape.accent }} />
-              <span className="block-copy">
-                <strong>{shape.label}</strong>
-                <small>{shape.description}</small>
-              </span>
-              <span className="block-add">+</span>
-            </button>
-          ))}
+      {hasWorkspace && (
+        <div className="sidebar-section">
+          <div className="sidebar-subheading">DIAGRAM BLOCKS</div>
+          <div className="block-list">
+            {SHAPE_LIBRARY.map((shape) => (
+              <button key={shape.type} className="block-item" onClick={() => onAddNode(shape.type)}>
+                <span className="block-swatch" style={{ background: shape.accent }} />
+                <span className="block-copy">
+                  <strong>{shape.label}</strong>
+                  <small>{shape.description}</small>
+                </span>
+                <span className="block-add">+</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </aside>
   );
 }

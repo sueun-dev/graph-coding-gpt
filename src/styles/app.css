@@ -54,34 +54,29 @@ button {
 }
 
 .title-bar {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: 14px;
-  padding: 0 10px;
+  padding: 0 12px;
   background: var(--titlebar);
   border-bottom: 1px solid #111;
   color: #d4d4d4;
   font-size: 12px;
 }
 
-.title-bar__menus,
+.title-bar__brand {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: #c5c5c5;
+}
+
 .title-bar__actions,
 .status-bar__left,
 .status-bar__right {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.title-bar__center {
-  justify-self: center;
-  font-size: 12px;
-  color: #c5c5c5;
-}
-
-.title-bar__actions {
-  justify-self: end;
 }
 
 .title-pill,
@@ -777,7 +772,64 @@ button {
 .welcome-actions {
   display: flex;
   gap: 10px;
-  margin: 20px 0;
+  margin: 20px 0 8px;
+}
+
+.welcome-manual-path {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 20px;
+}
+
+.welcome-manual-path__label {
+  font-size: 12px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.welcome-manual-path__row {
+  display: flex;
+  gap: 8px;
+}
+
+.welcome-manual-path__input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #181818;
+  color: #eaeaea;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.welcome-manual-path__input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.welcome-manual-path__notice {
+  margin: 0;
+  font-size: 12px;
+  color: #c7c7c7;
+}
+
+.welcome-manual-path__native {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #9aa0a6;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.welcome-manual-path__native:hover {
+  color: #e5e7eb;
+  text-decoration: underline;
 }
 
 .welcome-grid {
@@ -984,6 +1036,37 @@ button {
 
 .setup-form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.setup-field-wide {
+  grid-column: 1 / -1;
+}
+
+.setup-palette-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.setup-palette-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup-palette-row input[type="color"] {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #3c3c3c;
+  background: #2d2d2d;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.setup-palette-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
 }
 
 .setup-checkbox-grid {
@@ -1293,14 +1376,11 @@ button {
   }
 
   .title-bar {
-    grid-template-columns: 1fr;
-    justify-items: start;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
     height: auto;
     padding: 6px 10px;
-  }
-
-  .title-bar__center {
-    justify-self: start;
   }
 
   .status-bar {

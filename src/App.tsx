@@ -14,7 +14,6 @@ import {
 import BottomPanel from "./components/BottomPanel";
 import DiagramNodeRenderer from "./components/DiagramNode";
 import ExplorerPanel from "./components/ExplorerPanel";
-import FolderOpenButton from "./components/FolderOpenButton";
 import InspectorPanel from "./components/InspectorPanel";
 import RunPanel from "./components/RunPanel";
 import WorkspaceSetupModal from "./components/WorkspaceSetupModal";
@@ -102,6 +101,8 @@ export default function App() {
   const [suggestedPreset, setSuggestedPreset] = useState<HarnessPresetId>("agent-tool");
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
+  const [manualPath, setManualPath] = useState("");
+  const [manualPathLoading, setManualPathLoading] = useState(false);
   const [activeEditor, setActiveEditor] = useState<string>("diagram");
   const [activeAuxPanel, setActiveAuxPanel] = useState<AuxPanel>("ai");
   const flow = useReactFlow();
@@ -407,6 +408,27 @@ export default function App() {
     await loadWorkspace(data.rootName || loaded.rootName, loaded.files, "native", null, data.rootPath);
   };
 
+  const handleOpenFolderByPath = async (rawPath: string) => {
+    const trimmed = rawPath.trim();
+    if (!trimmed) {
+      setWorkspaceNotice("경로를 입력해주세요.");
+      return;
+    }
+
+    setManualPathLoading(true);
+    setWorkspaceNotice(`Opening ${trimmed} ...`);
+    try {
+      await reloadNativeWorkspace(trimmed);
+      setWorkspaceNotice(`Opened ${trimmed}`);
+      setManualPath("");
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "경로를 열지 못했습니다.";
+      setWorkspaceNotice(message);
+    } finally {
+      setManualPathLoading(false);
+    }
+  };
+
   const handleOpenFolder = async () => {
     setWorkspaceNotice("Opening native folder dialog...");
 
@@ -516,6 +538,7 @@ export default function App() {
         body: JSON.stringify({
           diagram,
           requestedMode: mode,
+          harness: harnessConfig,
         }),
       });
 
@@ -760,30 +783,38 @@ export default function App() {
       return (
         <section className="welcome-screen">
           <div className="welcome-card">
-            <span className="editor-view__eyebrow">Workspace Bootstrap</span>
-            <h1>Harness first, diagram second.</h1>
-            <p>
-              먼저 폴더를 열고 프로젝트 하네스를 고정한 뒤, 우측 AI 패널의 Brief to Diagram에 제품 아이디어를 적으면 GPT-5.4가 첫 기본 diagram을 만들어줍니다.
-            </p>
-            <div className="welcome-actions">
-              <button className="primary-button compact-button" onClick={() => void handleOpenFolder()}>
-                Open Folder
+            <h1>Open a project folder to start.</h1>
+            <p>폴더를 열면 Harness를 만들고, Brief를 써서 GPT-5.4로 diagram과 코드를 생성합니다.</p>
+            <div className="welcome-manual-path">
+              <div className="welcome-manual-path__row">
+                <input
+                  id="welcome-manual-path-input"
+                  className="welcome-manual-path__input"
+                  type="text"
+                  placeholder="/Users/you/Documents/your-app"
+                  value={manualPath}
+                  onChange={(event) => setManualPath(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !manualPathLoading) {
+                      void handleOpenFolderByPath(manualPath);
+                    }
+                  }}
+                  disabled={manualPathLoading}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <button
+                  className="primary-button compact-button"
+                  onClick={() => void handleOpenFolderByPath(manualPath)}
+                  disabled={manualPathLoading || !manualPath.trim()}
+                >
+                  {manualPathLoading ? "Opening..." : "Open"}
+                </button>
+              </div>
+              <button className="ghost-button compact-button welcome-manual-path__native" onClick={() => void handleOpenFolder()}>
+                또는 네이티브 대화상자로 폴더 선택
               </button>
-              <FolderOpenButton label="Import Folder" variant="ghost" onChange={handleFolderInputChange} />
-            </div>
-            <div className="welcome-grid">
-              <div>
-                <strong>Preset</strong>
-                <span>SaaS, API, Agent Tooling, Desktop, Mobile</span>
-              </div>
-              <div>
-                <strong>Policies</strong>
-                <span>Sandbox, MCP, shell, tests, partial build rules</span>
-              </div>
-              <div>
-                <strong>Saved Files</strong>
-                <span>.graphcoding/harness.json and build policy artifacts</span>
-              </div>
+              {workspaceNotice ? <p className="welcome-manual-path__notice">{workspaceNotice}</p> : null}
             </div>
           </div>
         </section>
@@ -844,21 +875,8 @@ export default function App() {
   return (
     <div className="ide-shell">
       <header className="title-bar">
-        <div className="title-bar__menus">
-          <span>File</span>
-          <span>Edit</span>
-          <span>Selection</span>
-          <span>View</span>
-          <span>Go</span>
-          <span>Run</span>
-          <span>Terminal</span>
-          <span>Help</span>
-        </div>
-        <div className="title-bar__center">Graph Coding GPT Prototype</div>
+        <div className="title-bar__brand">Graph Coding GPT</div>
         <div className="title-bar__actions">
-          <button className="ghost-button compact-button title-action-button" onClick={() => setIsSetupOpen(true)}>
-            Workspace Setup
-          </button>
           <span className="title-pill">{workspaceName}</span>
           <span className={`title-pill ${auth?.codexAuthenticated ? "is-ready" : ""}`}>
             {auth?.codexAuthenticated ? "GPT-5.4 Ready" : "Auth Pending"}
@@ -890,6 +908,7 @@ export default function App() {
           workspaceTree={workspaceTree}
           editorTabs={editorTabs}
           activeEditor={activeEditor}
+          hasWorkspace={workspaceFiles.length > 0}
           onOpenFolder={() => void handleOpenFolder()}
           onFolderImportChange={handleFolderInputChange}
           onSelectEditor={setActiveEditor}
