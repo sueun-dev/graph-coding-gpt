@@ -1,13 +1,13 @@
 # Graph Coding GPT
 
-Turn a sentence into a diagram, edit the diagram, then let GPT-5.4 implement it **one node at a time** with tests that have to go green before the next node starts.
+Turn a sentence into a diagram, edit the diagram, then let GPT-5.5 implement it **one node at a time** with tests that have to go green before the next node starts.
 
 Not a single-shot code generator. A visible, editable, per-node iterative build loop you drive from a React Flow canvas.
 
 ## The Flow
 
 ```
- Brief (a sentence)         →   GPT-5.4 drafts a diagram
+ Brief (a sentence)         →   GPT-5.5 drafts a diagram
  ──────────────────
  Diagram (edit on canvas)   →   nodes, edges, per-node intent/behavior/tests
  ──────────────────
@@ -25,7 +25,7 @@ You own the diagram. The loop turns each node into code + tests, fails visibly, 
 
 ## What the app actually does
 
-- **Brief → Diagram.** One sentence, one button. GPT-5.4 returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
+- **Brief → Diagram.** One sentence, one button. GPT-5.5 returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
 - **Per-node build loop.** Topological order (ties broken by x-position), `note`/`group` shapes skipped. Each node goes implementing → done | failed. On failure, the test output is fed into the retry prompt — up to 3 retries.
 - **Real tests.** Every node writes vitest tests under `tests/<node-slug>/`. The runner pins to the workspace's own `node_modules/.bin/vitest` so it never resolves to a sibling project's version.
 - **Correct cross-node context.** Each node's prompt includes the files produced by every prior completed node, so codex imports from them instead of re-implementing.
@@ -56,10 +56,13 @@ Install and run:
 
 ```bash
 npm install
-npm run dev              # concurrent server (8787) + vite client (5173)
+npm run dev              # concurrent server (8791) + vite client (5173)
 # or separately:
 npm run dev:server
 npm run dev:client
+
+# Need a different port? (e.g. 8791 is taken on your machine)
+GRAPHCODING_PORT=9100 npm run dev
 ```
 
 Open `http://localhost:5173`, type a project folder path, click **Open**, run the Harness wizard that auto-opens, then go to the **AI** tab, write a brief, click **Generate Diagram**. When the diagram is drafted and edited, switch to **BUILD** → **Start Build Loop**.
@@ -89,9 +92,9 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
    styles/app.css        VS Code-styled layout, 3-column workbench
 
  server/
-   index.mjs             express API on :8787
-     /api/ai/diagram        brief → structured diagram (gpt-5.4)
-     /api/ai/spec           diagram → structured spec (gpt-5.4, optional)
+   index.mjs             express API on :8791 (override with GRAPHCODING_PORT)
+     /api/ai/diagram        brief → structured diagram (gpt-5.5)
+     /api/ai/spec           diagram → structured spec (gpt-5.5, optional)
      /api/ai/build-order    topological sort (note/group skipped)
      /api/ai/build-node     codex workspace-write + vitest + retry
      /api/build-state/save  persist .graphcoding/build-state.json
@@ -125,7 +128,7 @@ Things that broke during real E2E testing and got fixed:
 
 ## Limitations
 
-- Diagram generation and each node build take time — `codex gpt-5.4` with reasoning effort `high` is usually 1–4 minutes per call.
+- Diagram generation and each node build take time — `codex gpt-5.5` with reasoning effort `high` is usually 1–4 minutes per call.
 - `"testing"` and `"fixing"` statuses are defined but the client doesn't currently stream intermediate server events, so the UI jumps `implementing → done | failed`. Server-sent events for in-progress retries is the next UX upgrade.
 - Fallback diagrams/specs (when codex fails) return with `ok:true`. The Build Loop already blocks Start when diagram source is fallback, but the spec path still ships a template silently if codex dies — treat unexpectedly fast spec results with suspicion.
 - Only tested on macOS with ChatGPT-backed codex login. Windows/Linux should work but the native folder dialog uses zenity/powershell fallbacks that haven't had the same mileage.

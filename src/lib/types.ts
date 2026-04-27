@@ -1,22 +1,25 @@
 import type { Edge, Node } from "@xyflow/react";
 
+// 9 shapes total — collapsed from the original 16. The deleted shapes
+// (queue/auth/external/event/decision/document/group) live on as legacy
+// values handled by `normalizeShape` in lib/diagram.ts so old saved diagrams
+// migrate transparently. Mapping table:
+//   queue | auth | external  -> service
+//   event                    -> api
+//   decision | document      -> process
+//   group                    -> note
+// The merged-in semantics now travel as text in node.notes/behavior or as
+// edge metadata (mode, condition, iteration). See DiagramEdgeData below.
 export type ShapeType =
   | "startEnd"
   | "screen"
   | "process"
-  | "decision"
   | "input"
   | "database"
   | "api"
   | "service"
-  | "queue"
   | "state"
-  | "event"
-  | "auth"
-  | "external"
-  | "document"
-  | "note"
-  | "group";
+  | "note";
 
 export type NodeStatus = "planned" | "active" | "blocked" | "done";
 export type LineStyle = "smoothstep" | "straight" | "step";
@@ -35,11 +38,33 @@ export type DiagramNodeData = {
   accent: string;
 };
 
+// Edges carry semantic metadata so the build LLM has a structured contract
+// between modules instead of relying on free-text inference. The four NEW
+// fields (dataShape, mode, condition, iteration) absorb the responsibilities
+// that used to live in the deleted shapes (event/queue/decision):
+//   - dataShape: typed payload that crosses A→B (kills cross-node type
+//     hallucination — codex sees "Message[]" instead of guessing).
+//   - mode:      sync (default) | async (queued) | event (pub/sub). This is
+//     the spot where the old `event`/`queue` semantic now lives.
+//   - condition: "if user authed" — branching predicate. Replaces the old
+//     `decision` shape (a process node with multiple outgoing edges, each
+//     edge carrying its own condition).
+//   - iteration: "loop until empty" / "fan-out 1:N" — flow-control hint
+//     that used to be impossible to express on a static diagram.
+//
+// All four are OPTIONAL strings; older saved diagrams parse cleanly because
+// they're absent. Empty strings render as "no extra constraint" in the UI.
+export type EdgeMode = "sync" | "async" | "event";
+
 export type DiagramEdgeData = {
   relation: string;
   notes: string;
   lineStyle: LineStyle;
   animated: boolean;
+  dataShape?: string;
+  mode?: EdgeMode;
+  condition?: string;
+  iteration?: string;
 };
 
 export type DiagramNode = Node<DiagramNodeData>;
@@ -70,6 +95,10 @@ export type DiagramDocument = {
     notes: string;
     lineStyle: LineStyle;
     animated: boolean;
+    dataShape?: string;
+    mode?: EdgeMode;
+    condition?: string;
+    iteration?: string;
   }>;
   scope: {
     mode: "full" | "selection";
@@ -133,7 +162,18 @@ export type DiagramBlueprint = {
     notes: string;
     lineStyle: LineStyle;
     animated: boolean;
+    dataShape?: string;
+    mode?: EdgeMode;
+    condition?: string;
+    iteration?: string;
   }>;
+};
+
+export type DiagramCoverageReport = {
+  ok: boolean;
+  missingLayers: string[];
+  warnings: string[];
+  totalRuntimeNodes: number;
 };
 
 export type DiagramGenerationResponse = {
@@ -141,6 +181,7 @@ export type DiagramGenerationResponse = {
   source: "codex" | "fallback";
   generatedAt: string;
   diagram: DiagramBlueprint;
+  coverage?: DiagramCoverageReport;
   raw?: string;
   error?: string;
 };

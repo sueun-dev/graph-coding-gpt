@@ -11,24 +11,38 @@ import type {
   ShapeType,
 } from "./types";
 
+// 9 shape types — pure architectural layers + one annotation type. Reduced
+// from 16 because the extras (decision/auth/queue/event/external/document/group)
+// were either redundant with their parent layer or expressed information that
+// belongs on edges (data shape, async/event mode, branch conditions).
+//
+// Order matters: the palette is rendered in this order, so we list them in
+// rough build-order from L1 (state) to L13 (startEnd) with `note` last as
+// the lone non-buildable annotation.
 export const SHAPE_LIBRARY: ShapeDefinition[] = [
-  { type: "startEnd", label: "Start / End", description: "프로세스 시작과 종료", accent: "#8df7a1" },
-  { type: "screen", label: "Screen", description: "UI 화면 또는 페이지", accent: "#7cc7ff" },
-  { type: "process", label: "Process", description: "핵심 로직 또는 처리 단계", accent: "#ffd16e" },
-  { type: "decision", label: "Decision", description: "분기, 조건, 정책 결정", accent: "#ff9d88" },
-  { type: "input", label: "Input", description: "유저 입력 또는 폼", accent: "#c1a7ff" },
-  { type: "database", label: "Database", description: "DB, 스토리지, 영속 계층", accent: "#67e4d6" },
-  { type: "api", label: "API", description: "HTTP API 또는 계약", accent: "#ffcb8a" },
-  { type: "service", label: "Service", description: "도메인 서비스 또는 모듈", accent: "#90b5ff" },
-  { type: "queue", label: "Queue", description: "비동기 큐 또는 이벤트 버퍼", accent: "#ffc2e0" },
-  { type: "state", label: "State", description: "상태 머신, 스토어, 캐시", accent: "#7ee3a0" },
-  { type: "event", label: "Event", description: "트리거, 웹훅, 알림 이벤트", accent: "#ff85b3" },
-  { type: "auth", label: "Auth", description: "로그인, 권한, 보안 경계", accent: "#f7a3ff" },
-  { type: "external", label: "External", description: "외부 시스템 또는 서드파티", accent: "#9ac4c9" },
-  { type: "document", label: "Document", description: "스펙, 결과물, 리포트", accent: "#ffe784" },
-  { type: "note", label: "Note", description: "설명, 제약, TODO 메모", accent: "#fff08b" },
-  { type: "group", label: "Group", description: "기능 묶음 또는 bounded context", accent: "#83a5ff" },
+  { type: "state",    label: "State",     description: "타입, 스키마, 스토어, 캐시", accent: "#7ee3a0" },
+  { type: "database", label: "Database",  description: "영속 계층 (localStorage, sqlite, indexeddb)", accent: "#67e4d6" },
+  { type: "service",  label: "Service",   description: "도메인 로직 (auth, queue, external SDK 포함)", accent: "#90b5ff" },
+  { type: "api",      label: "API",       description: "Bridge/gateway (event/webhook 포함, edge.mode로 구분)", accent: "#ffcb8a" },
+  { type: "process",  label: "Process",   description: "오케스트레이션 (분기는 outgoing edges로, 결과물 산출 포함)", accent: "#ffd16e" },
+  { type: "input",    label: "Input",     description: "UI primitives — 폼, 버튼, 입력 컴포넌트", accent: "#c1a7ff" },
+  { type: "screen",   label: "Screen",    description: "UI 화면 또는 페이지", accent: "#7cc7ff" },
+  { type: "startEnd", label: "Start / End", description: "앱 진입점 / 마운트", accent: "#8df7a1" },
+  { type: "note",     label: "Note",      description: "설명, 추천, TODO, 그룹 묶음 (빌드 무관)", accent: "#fff08b" },
 ];
+
+// Legacy shape values written by older diagrams (and older fallbacks) — map them
+// to the new 9-shape vocabulary on read. Without this, .strict() schemas would
+// reject old saved diagrams and the user would lose work.
+const LEGACY_SHAPE_MAP: Record<string, ShapeType> = {
+  queue: "service",
+  auth: "service",
+  external: "service",
+  event: "api",
+  decision: "process",
+  document: "process",
+  group: "note",
+};
 
 const defaultNodeData = (shape: ShapeType): DiagramNodeData => {
   const meta = SHAPE_LIBRARY.find((item) => item.type === shape)!;
@@ -51,8 +65,36 @@ const allowedShapes = new Set<ShapeType>(SHAPE_LIBRARY.map((item) => item.type))
 const allowedStatuses = new Set<NodeStatus>(["planned", "active", "blocked", "done"]);
 const allowedLineStyles = new Set<LineStyle>(["smoothstep", "straight", "step"]);
 
-const normalizeShape = (shape: string): ShapeType =>
-  allowedShapes.has(shape as ShapeType) ? (shape as ShapeType) : "process";
+// Translate any incoming shape string into the 9-shape vocabulary:
+//   1) accepted directly if already valid
+//   2) legacy shape name from a pre-collapse diagram → mapped via LEGACY_SHAPE_MAP
+//   3) anything else falls back to "process" so build-loop still has a layer
+const normalizeShape = (shape: string): ShapeType => {
+  if (allowedShapes.has(shape as ShapeType)) return shape as ShapeType;
+  const migrated = LEGACY_SHAPE_MAP[shape];
+  if (migrated) return migrated;
+  return "process";
+};
+
+// Run when re-hydrating saved diagrams (localStorage / disk). React-Flow node
+// objects keep `shape` inside `data`, so we walk and normalize every entry.
+// Idempotent — running twice is a no-op for already-current diagrams.
+export const migratePersistedDiagram = ({
+  nodes,
+  edges,
+}: {
+  nodes: DiagramNode[];
+  edges: DiagramEdge[];
+}): { nodes: DiagramNode[]; edges: DiagramEdge[] } => ({
+  nodes: nodes.map((node) => {
+    const currentShape = node.data?.shape;
+    if (!currentShape) return node;
+    const next = normalizeShape(currentShape);
+    if (next === currentShape) return node;
+    return { ...node, data: { ...node.data, shape: next } };
+  }),
+  edges,
+});
 
 const normalizeStatus = (status: string): NodeStatus =>
   allowedStatuses.has(status as NodeStatus) ? (status as NodeStatus) : "planned";
@@ -79,6 +121,9 @@ export const createInitialFlow = (): { nodes: DiagramNode[]; edges: DiagramEdge[
   };
 };
 
+// New edges start with empty metadata fields. Users fill them via the
+// inspector (or the LLM populates them when the brief implies async/event/
+// branching semantics).
 export const createEdge = (source: string, target: string, relation = "flows to"): DiagramEdge => ({
   id: crypto.randomUUID(),
   source,
@@ -93,6 +138,10 @@ export const createEdge = (source: string, target: string, relation = "flows to"
     notes: "",
     lineStyle: "smoothstep",
     animated: false,
+    dataShape: "",
+    mode: "sync",
+    condition: "",
+    iteration: "",
   },
 });
 
@@ -196,6 +245,9 @@ export const createFlowFromBlueprint = (blueprint: DiagramBlueprint): { nodes: D
 
     const created = createEdge(source, target, edge.relation);
     const lineStyle = normalizeLineStyle(edge.lineStyle);
+    // Propagate any of the four optional metadata fields the LLM filled in.
+    // Empty/undefined → empty string so the inspector renders blank-but-editable
+    // instead of `undefined`.
     edges.push({
       ...created,
       type: lineStyle,
@@ -205,6 +257,10 @@ export const createFlowFromBlueprint = (blueprint: DiagramBlueprint): { nodes: D
         notes: edge.notes,
         lineStyle,
         animated: edge.animated,
+        dataShape: edge.dataShape ?? "",
+        mode: edge.mode ?? "sync",
+        condition: edge.condition ?? "",
+        iteration: edge.iteration ?? "",
       },
     });
   }
@@ -241,6 +297,10 @@ export const buildDiagramDocument = (
     notes: edge.data?.notes ?? "",
     lineStyle: edge.data?.lineStyle ?? "smoothstep",
     animated: edge.data?.animated ?? false,
+    dataShape: edge.data?.dataShape ?? "",
+    mode: edge.data?.mode ?? "sync",
+    condition: edge.data?.condition ?? "",
+    iteration: edge.data?.iteration ?? "",
   })),
   scope: {
     mode: selectedNodeIds.length > 0 ? "selection" : "full",

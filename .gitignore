@@ -3,6 +3,7 @@ dist/
 .tmp/
 generated/
 .graphcoding/
+.claude/
 
 .DS_Store
 *.log

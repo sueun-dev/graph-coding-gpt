@@ -45,35 +45,48 @@ export default function RunPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">AI CONTROL</p>
-          <h2>GPT-5.4 Runtime</h2>
+          <h2>GPT-5.5 Runtime</h2>
         </div>
         <span className={`runtime-status ${auth?.codexAuthenticated ? "ok" : "warn"}`}>
           {auth?.codexAuthenticated ? "Codex Ready" : "Auth Check Needed"}
         </span>
       </div>
 
-      {/* STEP 1 — Brief → Diagram (primary path) */}
-      <div className="runtime-card">
-        <h3>1. Brief → Diagram</h3>
-        <p>만들고 싶은 앱이나 흐름을 대충 적으세요. GPT-5.4가 이 텍스트를 읽고 노드와 관계선을 생성합니다.</p>
-        <textarea
-          className="runtime-textarea"
-          value={brief}
-          onChange={handleBriefInput}
-          rows={6}
-          placeholder="예: OAuth 로그인으로 연결되는 데스크톱 앱. 사용자는 도식화를 그리고 GPT-5.4가 앱 구조와 구현 프롬프트를 생성해야 한다. 부분 구현과 테스트 루프도 필요."
-        />
-        <div className="button-row">
-          <button className="primary-button" onClick={() => onGenerateDiagram(hasDiagram ? "augment" : "replace")} disabled={diagramLoading}>
-            {hasDiagram ? "Refine Diagram" : "Generate Diagram"}
-          </button>
-        </div>
-        {hasDiagram ? (
+      {hasDiagram ? (
+        /* STEP 1 (refine mode) — user already has a diagram; let them iterate on it here.
+           The initial brief input lives in the canvas empty-state, so this card only renders
+           once a diagram exists. */
+        <div className="runtime-card">
+          <h3>1. Refine Diagram</h3>
+          <p>추가로 원하는 점을 적으면 기존 diagram에 덧붙여 노드/관계선을 더합니다.</p>
+          <textarea
+            className="runtime-textarea"
+            value={brief}
+            onChange={handleBriefInput}
+            rows={4}
+            placeholder="예: 결제 화면을 추가하고 Stripe 연동 노드를 넣어줘."
+          />
+          <div className="button-row">
+            <button className="primary-button" onClick={() => onGenerateDiagram("augment")} disabled={diagramLoading}>
+              Refine Diagram
+            </button>
+          </div>
           <p className="runtime-hint">
-            처음부터 다시 만들려면 사이드바 <strong>↺</strong>로 지운 뒤 실행하세요.
+            처음부터 다시 만들려면 좌측 EXPLORER의 <strong>↺</strong>로 지운 뒤 실행하세요.
           </p>
-        ) : null}
-      </div>
+        </div>
+      ) : (
+        /* STEP 1 (empty mode) — brief input lives in the canvas. Keep this side panel quiet
+           but informative so the user sees the whole 3-step flow laid out. */
+        <div className="runtime-card runtime-card--subtle">
+          <h3>시작하는 법</h3>
+          <ol className="runtime-flowlist">
+            <li><strong>캔버스</strong>에 한 문장 brief를 적고 <em>Generate Diagram</em>을 누르세요.</li>
+            <li>생성된 노드/관계선을 <strong>캔버스</strong>에서 직접 편집합니다.</li>
+            <li>상단 <strong>BUILD</strong> 탭 → <em>Start Build Loop</em>으로 코드 + 테스트를 실행합니다.</li>
+          </ol>
+        </div>
+      )}
 
       {diagramLoading && (
         <div className="result-card">
@@ -98,12 +111,35 @@ export default function RunPanel({
           <p>{diagramResult.diagram.summary}</p>
           {diagramResult.source === "fallback" ? (
             <p className="result-warning">
-              이 결과는 fallback diagram입니다 (GPT-5.4 응답이 아닌 대체 결과). Build Loop은 실제 응답을 받은 뒤에만 실행할 수 있습니다.
+              이 결과는 fallback diagram입니다 (GPT-5.5 응답이 아닌 대체 결과). Build Loop은 실제 응답을 받은 뒤에만 실행할 수 있습니다.
             </p>
           ) : null}
           {diagramResult.error ? (
             <p className="result-warning">이유: <strong>{diagramResult.error}</strong></p>
           ) : null}
+
+          {/* Coverage check — surfaces missing mandatory architecture layers
+              so the user can refine before kicking off the Build Loop. */}
+          {diagramResult.coverage && !diagramResult.coverage.ok ? (
+            <div className="result-coverage result-coverage--warn">
+              <strong>⚠️ 빠진 layer가 있어요</strong>
+              <p>이 layer들의 노드를 더 채워야 빌드가 hallucinate 없이 끝까지 갈 수 있습니다:</p>
+              <ul>
+                {diagramResult.coverage.missingLayers.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+              <p className="result-coverage__hint">
+                위쪽 brief에 부족한 layer를 명시하고 <em>Refine Diagram</em>으로 보강하거나, 캔버스에서 직접 노드를 추가하세요.
+              </p>
+            </div>
+          ) : null}
+          {diagramResult.coverage?.warnings.length ? (
+            <div className="result-coverage result-coverage--info">
+              {diagramResult.coverage.warnings.map((w) => <p key={w}>{w}</p>)}
+            </div>
+          ) : null}
+
           <div className="runtime-summary-grid runtime-summary-grid-tight">
             <div className="runtime-summary-cell">
               <span className="meta-label">Nodes</span>
@@ -113,6 +149,14 @@ export default function RunPanel({
               <span className="meta-label">Edges</span>
               <strong>{diagramResult.diagram.edges.length}</strong>
             </div>
+            {diagramResult.coverage ? (
+              <div className="runtime-summary-cell">
+                <span className="meta-label">Coverage</span>
+                <strong className={diagramResult.coverage.ok ? "is-ok" : "is-warn"}>
+                  {diagramResult.coverage.ok ? "✓ 전체" : `${diagramResult.coverage.missingLayers.length} 빠짐`}
+                </strong>
+              </div>
+            ) : null}
           </div>
         </div>
       )}

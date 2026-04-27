@@ -13,12 +13,20 @@ import {
 } from "@xyflow/react";
 import BottomPanel from "./components/BottomPanel";
 import BuildLoopPanel from "./components/BuildLoopPanel";
+import DiagramEmptyState from "./components/DiagramEmptyState";
 import DiagramNodeRenderer from "./components/DiagramNode";
 import ExplorerPanel from "./components/ExplorerPanel";
 import InspectorPanel from "./components/InspectorPanel";
 import RunPanel from "./components/RunPanel";
 import WorkspaceSetupModal from "./components/WorkspaceSetupModal";
-import { buildDiagramDocument, createEdge, createFlowFromBlueprint, createInitialFlow, createNode } from "./lib/diagram";
+import {
+  buildDiagramDocument,
+  createEdge,
+  createFlowFromBlueprint,
+  createInitialFlow,
+  createNode,
+  migratePersistedDiagram,
+} from "./lib/diagram";
 import {
   buildHarnessArtifacts,
   findWorkspaceHarnessFile,
@@ -201,8 +209,13 @@ export default function App() {
       if (cancelled) return;
       try {
         const parsed = JSON.parse(raw) as { nodes: DiagramNodeType[]; edges: DiagramEdge[] };
-        setNodes(parsed.nodes);
-        setEdges(parsed.edges);
+        // Saved diagrams may have been written under the old 16-shape vocabulary
+        // (e.g. shape: "external", "decision", "document"). Run them through the
+        // migration table so they conform to the current 9-shape schema before
+        // hitting any downstream code that asserts on shape values.
+        const migrated = migratePersistedDiagram(parsed);
+        setNodes(migrated.nodes);
+        setEdges(migrated.edges);
       } catch (err) {
         console.warn("[diagram] failed to parse stored diagram; backing up and starting fresh:", err);
         if (key) {
@@ -398,11 +411,19 @@ export default function App() {
           return edge;
         }
 
+        // Spread `edge.data` first so the new edge metadata fields
+        // (dataShape/mode/condition/iteration) are preserved when the user
+        // edits any single field. Without this spread, editing `relation`
+        // would wipe `dataShape` etc. back to undefined.
         const data = {
           relation: edge.data?.relation ?? "",
           notes: edge.data?.notes ?? "",
           lineStyle: edge.data?.lineStyle ?? "smoothstep",
           animated: edge.data?.animated ?? false,
+          dataShape: edge.data?.dataShape ?? "",
+          mode: edge.data?.mode ?? "sync",
+          condition: edge.data?.condition ?? "",
+          iteration: edge.data?.iteration ?? "",
           [field]: value,
         };
 
@@ -777,7 +798,7 @@ export default function App() {
       return;
     }
     if (diagramResult?.source === "fallback") {
-      setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 GPT-5.4 응답을 먼저 받으세요.");
+      setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 GPT-5.5 응답을 먼저 받으세요.");
       setActiveAuxPanel("ai");
       return;
     }
@@ -1066,7 +1087,7 @@ export default function App() {
 
     if (activeEditor === "spec") {
       if (!result) {
-        return renderTextDocument("specification.md", "No generated specification yet.\n\nRun GPT-5.4 from the AI panel to generate one.");
+        return renderTextDocument("specification.md", "No generated specification yet.\n\nRun GPT-5.5 from the AI panel to generate one.");
       }
 
       return renderTextDocument(
@@ -1113,7 +1134,7 @@ export default function App() {
         <section className="welcome-screen">
           <div className="welcome-card">
             <h1>Open a project folder to start.</h1>
-            <p>폴더를 열면 Harness를 만들고, Brief를 써서 GPT-5.4로 diagram과 코드를 생성합니다.</p>
+            <p>폴더를 열면 Harness를 만들고, Brief를 써서 GPT-5.5로 diagram과 코드를 생성합니다.</p>
             <div className="welcome-manual-path">
               <div className="welcome-manual-path__row">
                 <input
@@ -1150,6 +1171,8 @@ export default function App() {
       );
     }
 
+    const isEmptyCanvas = nodes.length === 0;
+
     return (
       <section className="diagram-editor">
         <div className="editor-view__header">
@@ -1160,42 +1183,44 @@ export default function App() {
           <div className="editor-toolbar">
             <span className="editor-chip">{nodes.length} nodes</span>
             <span className="editor-chip">{edges.length} arrows</span>
-            <span className="editor-chip">{selectedNodes.length > 0 ? `${selectedNodes.length} selected` : "full scope"}</span>
-            <button className="ghost-button compact-button" onClick={() => flow.fitView({ duration: 300, padding: 0.2 })}>
-              Fit View
-            </button>
+            {selectedNodes.length > 0 ? (
+              <span className="editor-chip">{selectedNodes.length} selected</span>
+            ) : null}
+            {!isEmptyCanvas ? (
+              <button className="ghost-button compact-button" onClick={() => flow.fitView({ duration: 300, padding: 0.2 })}>
+                Fit View
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className="canvas-stage">
-          <div className="canvas-overlay">
-            <strong>Flow Editor</strong>
-            <span>
-              {nodes.length === 0
-                ? "우측 AI 패널의 Brief to Diagram에 러프 요구를 적으면 GPT-5.4가 첫 기본 diagram을 구성합니다."
-                : "도형을 추가하고, 노드 안에 유저 행동과 시스템 동작을 적은 뒤 화살표로 관계를 연결합니다."}
-            </span>
-          </div>
-          <div className="scope-banner">
-            {diagram.scope.mode === "selection"
-              ? `Selection Mode: ${diagram.scope.nodeIds.length} nodes`
-              : "Full Graph Mode"}
-          </div>
-          <ReactFlow
-            className="flow-canvas"
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={handleConnect}
-            nodeTypes={nodeTypes}
-            fitView
-            selectionOnDrag
-          >
-            <Background color="#2f2f2f" gap={22} variant={BackgroundVariant.Dots} />
-            <MiniMap pannable zoomable />
-            <Controls />
-          </ReactFlow>
+          {isEmptyCanvas ? (
+            <DiagramEmptyState
+              brief={diagramBrief}
+              loading={diagramLoading}
+              error={diagramError}
+              authReady={Boolean(auth?.codexAuthenticated)}
+              onBriefChange={setDiagramBrief}
+              onGenerate={() => void generateDiagramFromBrief("replace")}
+            />
+          ) : (
+            <ReactFlow
+              className="flow-canvas"
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={handleConnect}
+              nodeTypes={nodeTypes}
+              fitView
+              selectionOnDrag
+            >
+              <Background color="#2f2f2f" gap={22} variant={BackgroundVariant.Dots} />
+              <MiniMap pannable zoomable />
+              <Controls />
+            </ReactFlow>
+          )}
         </div>
       </section>
     );
@@ -1208,7 +1233,7 @@ export default function App() {
         <div className="title-bar__actions">
           <span className="title-pill">{workspaceName}</span>
           <span className={`title-pill ${auth?.codexAuthenticated ? "is-ready" : ""}`}>
-            {auth?.codexAuthenticated ? "GPT-5.4 Ready" : "Auth Pending"}
+            {auth?.codexAuthenticated ? "GPT-5.5 Ready" : "Auth Pending"}
           </span>
         </div>
       </header>
@@ -1307,7 +1332,7 @@ export default function App() {
                     : diagram.nodes.length === 0
                       ? "먼저 diagram을 만들거나 확정하세요."
                       : diagramResult?.source === "fallback"
-                        ? "현재 diagram은 fallback 결과입니다. 실제 GPT-5.4 응답을 받은 뒤 실행하세요."
+                        ? "현재 diagram은 fallback 결과입니다. 실제 GPT-5.5 응답을 받은 뒤 실행하세요."
                         : ""
                 }
                 onStart={() => void startBuildLoop()}

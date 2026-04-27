@@ -408,33 +408,199 @@ button {
   overflow: hidden;
 }
 
-.canvas-overlay,
-.scope-banner {
-  position: absolute;
-  z-index: 4;
-  left: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid #3c3c3c;
-  background: rgba(30, 30, 30, 0.92);
-  font-size: 12px;
-}
-
-.canvas-overlay {
-  top: 12px;
-  max-width: 420px;
-}
-
-.scope-banner {
-  top: 88px;
-  color: #9cdcfe;
-}
-
 .flow-canvas {
   width: 100%;
   height: 100%;
+}
+
+/* Empty-canvas hero. Shown when the diagram has zero nodes — replaces
+   ReactFlow entirely so the very first interaction is obvious. */
+.diagram-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  height: 100%;
+  padding: 48px 64px;
+  background: radial-gradient(ellipse at center, #252526 0%, #1e1e1e 72%);
+  overflow: auto;
+}
+
+.diagram-empty__steps {
+  display: flex;
+  gap: 10px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  color: #808080;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.diagram-empty__steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid #333;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diagram-empty__steps li + li::before {
+  content: "→";
+  margin-right: 4px;
+  color: #555;
+}
+
+.diagram-empty__steps li.is-active {
+  color: #ffffff;
+  border-color: #0e639c;
+  background: rgba(14, 99, 156, 0.18);
+}
+
+.diagram-empty__step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #2d2d2d;
+  color: #d4d4d4;
+  font-weight: 600;
+}
+
+.diagram-empty__steps li.is-active .diagram-empty__step-num {
+  background: #0e639c;
+  color: #ffffff;
+}
+
+.diagram-empty__title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.diagram-empty__subtitle {
+  margin: 0;
+  max-width: 560px;
+  text-align: center;
+  color: #9a9a9a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.diagram-empty__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 640px;
+  margin-top: 8px;
+}
+
+.diagram-empty__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a9a9a;
+}
+
+.diagram-empty__textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid #3c3c3c;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.1s ease-out;
+}
+
+.diagram-empty__textarea:focus {
+  outline: none;
+  border-color: #0e639c;
+  box-shadow: 0 0 0 1px #0e639c;
+}
+
+.diagram-empty__textarea:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.diagram-empty__cta-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 640px;
+}
+
+.diagram-empty__cta {
+  flex: 0 0 auto;
+  padding: 11px 22px;
+  border: none;
+  border-radius: 2px;
+  background: #0e639c;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.1s ease-out;
+}
+
+.diagram-empty__cta:hover:not(:disabled) {
+  background: #1177bb;
+}
+
+.diagram-empty__cta:disabled {
+  background: #2d2d2d;
+  color: #6b6b6b;
+  cursor: not-allowed;
+}
+
+.diagram-empty__shortcut {
+  color: #6b6b6b;
+  font-size: 11px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.diagram-empty__note {
+  max-width: 640px;
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 3px solid #3c3c3c;
+  background: rgba(255, 255, 255, 0.02);
+  color: #9a9a9a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diagram-empty__note code {
+  padding: 1px 5px;
+  background: #2d2d2d;
+  color: #d4d4d4;
+  border-radius: 2px;
+  font-size: 11px;
+}
+
+.diagram-empty__note.is-warn {
+  border-left-color: #cca700;
+  color: #dcb75b;
+}
+
+.diagram-empty__note.is-error {
+  border-left-color: #f48771;
+  color: #f48771;
 }
 
 .document-editor h2,
@@ -550,6 +716,94 @@ button {
   margin: 8px 0 0;
   font-size: 11px;
   color: #8a8a8a;
+}
+
+/* Side-panel "how to start" checklist shown while the canvas empty-state owns
+   the primary brief input. Uses base <ol> for native step numbering. */
+.runtime-flowlist {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: #bfbfbf;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.runtime-flowlist li + li {
+  margin-top: 6px;
+}
+
+.runtime-flowlist strong {
+  color: #ffffff;
+}
+
+.runtime-flowlist em {
+  color: #4ec9b0;
+  font-style: normal;
+}
+
+/* Coverage report — surfaces missing architecture layers so the user can
+   refine before kicking off the Build Loop. Lives inside .result-card. */
+.result-coverage {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid #3c3c3c;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.result-coverage strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #ffffff;
+}
+
+.result-coverage p {
+  margin: 4px 0;
+  color: #bfbfbf;
+}
+
+.result-coverage ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  color: #d4d4d4;
+}
+
+.result-coverage ul li {
+  margin: 2px 0;
+}
+
+.result-coverage--warn {
+  border-left-color: #cca700;
+  background: rgba(204, 167, 0, 0.06);
+}
+
+.result-coverage--warn strong {
+  color: #dcb75b;
+}
+
+.result-coverage--info {
+  border-left-color: #75beff;
+}
+
+.result-coverage__hint {
+  margin-top: 8px;
+  color: #8a8a8a;
+  font-size: 11px;
+}
+
+.result-coverage__hint em {
+  color: #4ec9b0;
+  font-style: normal;
+}
+
+.runtime-summary-cell strong.is-ok {
+  color: #89d185;
+}
+
+.runtime-summary-cell strong.is-warn {
+  color: #dcb75b;
 }
 
 .runtime-optional {

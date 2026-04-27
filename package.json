@@ -2,7 +2,7 @@
   "name": "graph-coding-gpt",
   "private": true,
   "version": "0.1.0",
-  "description": "Diagram-driven, per-node iterative code generator. Draft a diagram with GPT-5.4, edit it, then codex writes + tests each node one at a time with automatic fix-on-fail retries.",
+  "description": "Diagram-driven, per-node iterative code generator. Draft a diagram with GPT-5.5, edit it, then codex writes + tests each node one at a time with automatic fix-on-fail retries.",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,magenta \"npm run dev:server\" \"npm run dev:client\"",

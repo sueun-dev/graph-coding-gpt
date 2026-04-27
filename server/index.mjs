@@ -5,7 +5,10 @@ import path from "path";
 import { spawn, spawnSync } from "child_process";
 
 const app = express();
-const PORT = 8787;
+// Port 8791 instead of the common 8787 to avoid collision with sibling dev
+// servers (e.g. threads-oauth) that also default to 8787. Override with
+// GRAPHCODING_PORT if 8791 is taken on your machine.
+const PORT = Number(process.env.GRAPHCODING_PORT) || 8791;
 const ROOT = process.cwd();
 const GENERATED_DIR = path.join(ROOT, "generated");
 const TMP_DIR = path.join(ROOT, ".tmp");
@@ -102,7 +105,13 @@ const DIAGRAM_SCHEMA = {
           key: { type: "string" },
           shape: {
             type: "string",
-            enum: ["startEnd", "screen", "process", "decision", "input", "database", "api", "service", "queue", "state", "event", "auth", "external", "document", "note", "group"],
+            // 9-shape vocabulary. Reduced from 16 — the merged-away shapes
+            // (queue/auth/external/event/decision/document/group) used to
+            // each carry an architectural meaning that is now expressed via
+            // a parent shape + edge metadata or behavior text. The server
+            // also accepts legacy values via migrateLegacyShape() before
+            // schema validation, so older saved diagrams keep working.
+            enum: ["startEnd", "screen", "process", "input", "database", "api", "service", "state", "note"],
           },
           title: { type: "string" },
           actor: { type: "string" },
@@ -124,7 +133,15 @@ const DIAGRAM_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["sourceKey", "targetKey", "relation", "notes", "lineStyle", "animated"],
+        // dataShape/mode/condition/iteration are required so the LLM ALWAYS
+        // fills them — even with empty strings. Required-but-empty is
+        // strictly better than optional: it forces the model to think about
+        // each field for every edge, and we get a structured trail of
+        // "this edge has no condition" vs "the model forgot the field".
+        required: [
+          "sourceKey", "targetKey", "relation", "notes", "lineStyle", "animated",
+          "dataShape", "mode", "condition", "iteration",
+        ],
         properties: {
           sourceKey: { type: "string" },
           targetKey: { type: "string" },
@@ -135,6 +152,12 @@ const DIAGRAM_SCHEMA = {
             enum: ["smoothstep", "straight", "step"],
           },
           animated: { type: "boolean" },
+          // The four NEW edge-metadata fields (Stage 2 of the 16→9 collapse).
+          // See src/lib/types.ts DiagramEdgeData for full semantics.
+          dataShape: { type: "string" },
+          mode: { type: "string", enum: ["sync", "async", "event"] },
+          condition: { type: "string" },
+          iteration: { type: "string" },
         },
       },
     },
@@ -320,6 +343,35 @@ const compactText = (value = "") => value.replace(/\s+/g, " ").trim();
 const isKoreanText = (value = "") => /[가-힣]/.test(value);
 const containsAny = (text, keywords) => keywords.some((keyword) => text.includes(keyword));
 
+// Mirror of LEGACY_SHAPE_MAP in src/lib/diagram.ts. Used when an incoming
+// diagram (from a saved workspace, an old fallback, or rarely from a stale
+// codex response) still uses the pre-collapse 16-shape vocabulary. Walks
+// every node and rewrites the `shape` field in-place. Edges are unaffected
+// — they don't carry a shape.
+const LEGACY_SHAPE_MAP = {
+  queue: "service",
+  auth: "service",
+  external: "service",
+  event: "api",
+  decision: "process",
+  document: "process",
+  group: "note",
+};
+
+const migrateLegacyShape = (shape) => LEGACY_SHAPE_MAP[shape] ?? shape;
+
+const migrateDiagramShapes = (diagram) => {
+  if (!diagram || !Array.isArray(diagram.nodes)) return diagram;
+  return {
+    ...diagram,
+    nodes: diagram.nodes.map((node) =>
+      node && LEGACY_SHAPE_MAP[node.shape]
+        ? { ...node, shape: LEGACY_SHAPE_MAP[node.shape] }
+        : node,
+    ),
+  };
+};
+
 const detectExchangeName = (brief, korean) => {
   if (containsAny(brief, ["빗썸", "bithumb"])) {
     return korean ? "빗썸" : "Bithumb";
@@ -480,18 +532,36 @@ const stripAlertWordsFromSettingsNode = (node, korean) => {
   return node;
 };
 
+// "Dedicated X node" = a node whose ENTIRE purpose is feature X. Used to
+// auto-prune feature nodes the user didn't ask for. After the 16→9 shape
+// collapse the previous shape signals (auth/event/external/document) are
+// gone, so we lean on title-keyword matching instead. Title-only is
+// deliberately strict: a node that just *mentions* auth in its behavior
+// won't get pruned — only one whose title clearly names it as the
+// auth/notification/export module.
+const titleMentions = (node, keywords) => {
+  const haystack = (node.title || "").toLowerCase();
+  return keywords.some((kw) => haystack.includes(kw.toLowerCase()));
+};
+
 const isDedicatedAuthNode = (node, lowerText) =>
-  node.shape === "auth" || containsAny(lowerText, ["local profile", "pin", "profile unlock", "프로필 잠금", "잠금 해제"]);
+  titleMentions(node, ["auth", "login", "signin", "sign in", "oauth", "로그인", "인증", "권한", "프로필 잠금"]) ||
+  containsAny(lowerText, ["local profile", "pin", "profile unlock", "프로필 잠금", "잠금 해제"]);
 
 const isDedicatedNotificationNode = (node, lowerText) =>
-  (node.shape === "event" || node.shape === "external") &&
+  titleMentions(node, ["notification", "alert", "알림", "푸시"]) &&
   containsAny(lowerText, ["notification", "alert", "desktop notification", "알림", "알림 센터"]);
 
 const isDedicatedExportNode = (node, lowerText) =>
-  (node.shape === "service" || node.shape === "document") &&
+  titleMentions(node, ["export", "csv", "json file", "download", "내보내기", "다운로드"]) &&
   containsAny(lowerText, ["export", "csv", "json file", "file permission", "내보내기", "파일 권한"]);
 
-const sanitizeDiagramBlueprint = (blueprint, brief, harness) => {
+const sanitizeDiagramBlueprint = (rawBlueprint, brief, harness) => {
+  // Migrate legacy 16-shape vocabulary FIRST so all downstream sanitization
+  // (auth-node detection, recommendation extraction, etc.) sees only the new
+  // 9-shape vocabulary. Without this, a fallback that still uses
+  // shape:"external"/"event" would slip through unchanged.
+  const blueprint = migrateDiagramShapes(rawBlueprint);
   const korean = isKoreanText(brief);
   const normalizedBrief = compactText(brief).toLowerCase();
   const explicit = {
@@ -655,6 +725,125 @@ const sanitizeDiagramBlueprint = (blueprint, brief, harness) => {
   };
 };
 
+// Mandatory architecture layers — every diagram must have at least one node
+// of each shape below to be "buildable end-to-end". After the 16→9 shape
+// collapse, all 8 buildable shapes are mandatory (only `note`, the lone
+// annotation shape, is optional). Layer numbers match SHAPE_PRIORITY above.
+// Keep this in sync with [MANDATORY] markers in buildPromptFromBrief.
+const MANDATORY_LAYERS = [
+  { shape: "state",    layer: "L1", label: "Types & schemas" },
+  { shape: "database", layer: "L2", label: "Persistence" },
+  { shape: "service",  layer: "L3", label: "Domain services (incl. auth/queue/external)" },
+  { shape: "api",      layer: "L4", label: "Bridge / gateway (incl. event/webhook)" },
+  { shape: "process",  layer: "L5", label: "Orchestration (incl. decision/output-generation)" },
+  { shape: "input",    layer: "L6", label: "UI primitives" },
+  { shape: "screen",   layer: "L7", label: "Screens" },
+  { shape: "startEnd", layer: "L8", label: "Entry point" },
+];
+
+// Returns { ok, missingLayers, warnings, totalRuntimeNodes } describing whether
+// the diagram has enough layer coverage to be buildable. Pure inspection — does
+// NOT mutate the diagram. The client decides whether to block Build Loop or just
+// warn the user. Cheap to run after every generation.
+// Generic shippability heuristics — same for every appType. We do NOT branch
+// on harness because the graph is the source of truth; platform-specific
+// knowledge belongs in the prompt, not in this validator. These checks just
+// look for *traces* that a thoughtful graph would always leave behind.
+const SHIPPABILITY_KEYWORDS = {
+  // Look for an explicit runtime entry/host artifact node. Typical titles:
+  // "HTML 진입점", "main entry", "bin/cli.ts", "server bootstrap", "app shell".
+  entry: [
+    "html", "index.html", "entry", "진입", "bootstrap", "부트스트랩", "shell", "셸",
+    "mount", "마운트", "bin", "main entry", "서버 시작", "server boot",
+    "app boot", "앱 부트",
+  ],
+  // Look for a smoke / integration test node — something that boots the
+  // assembled system and asserts a real round-trip.
+  smoke: [
+    "smoke", "스모크", "integration", "통합", "e2e", "end-to-end",
+    "boot test", "부팅 테스트", "round-trip", "round trip", "라운드트립",
+    "happy path", "해피 패스",
+  ],
+  // Look for a real platform adapter implementation (not just a contract).
+  adapter: [
+    "adapter", "어댑터", "implementation", "구현체", "tauri", "electron",
+    "ipc bridge", "ipc 다리", "localstorage", "indexeddb", "sqlite",
+    "fetch client", "http client",
+  ],
+};
+
+// Match against title only — behavior/intent text is too noisy (e.g. a process
+// that "mounts the app" mentions "mount" but is not itself an entry artifact).
+// A proper entry/smoke/adapter node always names its role in the title.
+const matchesKeywords = (node, keywords) => {
+  const haystack = (node.title || "").toLowerCase();
+  return keywords.some((kw) => haystack.includes(kw.toLowerCase()));
+};
+
+const validateDiagramCoverage = (diagram) => {
+  // Only `note` is skipped now — the old `group` shape was legacy-migrated
+  // into `note` before reaching this code.
+  const skip = new Set(["note"]);
+  const runtime = (diagram?.nodes || []).filter((n) => !skip.has(n.shape));
+  const shapesPresent = new Set(runtime.map((n) => n.shape));
+
+  const missingLayers = MANDATORY_LAYERS.filter((m) => !shapesPresent.has(m.shape));
+  const warnings = [];
+
+  if (runtime.length < 8) {
+    warnings.push(`Only ${runtime.length} runtime nodes — typical apps need 14-22. Diagram may be too thin to ship.`);
+  }
+  const startEndCount = runtime.filter((n) => n.shape === "startEnd").length;
+  if (startEndCount > 1) {
+    warnings.push(`${startEndCount} entry-point nodes detected — should be exactly 1.`);
+  }
+
+  // Shippability heuristics — only warnings, never block. The build loop
+  // still runs even if these miss, but the user is told what's likely absent.
+  const hasEntryArtifact = runtime.some((n) => matchesKeywords(n, SHIPPABILITY_KEYWORDS.entry));
+  if (!hasEntryArtifact) {
+    warnings.push(
+      "No node looks like a runtime entry artifact (HTML / bin script / server bootstrap). " +
+      "Without one, the built modules will not actually boot. Add an entry node before Build Loop.",
+    );
+  }
+  // Smoke tests live under `process` after the shape collapse — the old
+  // `decision` shape is gone (decision = process with multiple outgoing
+  // edges), so we don't have to look anywhere else.
+  const hasSmokeTest = runtime.some(
+    (n) => n.shape === "process" && matchesKeywords(n, SHIPPABILITY_KEYWORDS.smoke),
+  );
+  if (!hasSmokeTest) {
+    warnings.push(
+      "No smoke / integration test node detected. Unit tests verify each module in isolation but do " +
+      "not prove the assembled app boots. Add a smoke-test process node that mounts the app and " +
+      "exercises one real round-trip.",
+    );
+  }
+  // Adapters now live under `service` (was the old `external`) or `api`
+  // (HTTP/IPC bridges). After the shape collapse, "external SDK wrapper"
+  // is just a service with adapter-themed title text.
+  const hasAdapterImpl = runtime.some(
+    (n) => (n.shape === "service" || n.shape === "api") && matchesKeywords(n, SHIPPABILITY_KEYWORDS.adapter),
+  );
+  // Only flag adapter-impl absence if there's a database/contract node — i.e.
+  // when persistence exists in the graph, *something* must implement it.
+  const hasPersistenceContract = runtime.some((n) => n.shape === "database");
+  if (hasPersistenceContract && !hasAdapterImpl) {
+    warnings.push(
+      "Persistence contract exists but no platform adapter implementation node was found. " +
+      "The contract alone stores nothing — add an adapter node (browser storage, Tauri IPC, etc).",
+    );
+  }
+
+  return {
+    ok: missingLayers.length === 0,
+    missingLayers: missingLayers.map((m) => `${m.layer} ${m.label} (shape: ${m.shape})`),
+    warnings,
+    totalRuntimeNodes: runtime.length,
+  };
+};
+
 const buildCryptoTrackerFallback = (brief, harness, errorMessage = "") => {
   const korean = isKoreanText(brief);
   const normalized = brief.toLowerCase();
@@ -711,11 +900,13 @@ const buildCryptoTrackerFallback = (brief, harness, errorMessage = "") => {
     },
     {
       key: "exchange-api",
-      shape: "external",
-      title: korean ? `${exchangeName} 시세 API` : `${exchangeName} Market API`,
+      // Service shape with explicit "external SDK" framing in the notes —
+      // the old `external` shape is gone; we keep that semantic on the text.
+      shape: "service",
+      title: korean ? `${exchangeName} 시세 API 어댑터` : `${exchangeName} Market API Adapter`,
       actor: korean ? "외부 시스템" : "External Service",
       intent: korean ? "코인 가격과 거래 정보를 제공한다" : "Provide ticker and market data",
-      behavior: korean ? "심볼별 현재가와 변동 데이터를 반환한다" : "Return current price and movement data per symbol",
+      behavior: korean ? "심볼별 현재가와 변동 데이터를 반환한다 (외부 SDK/HTTP 어댑터)" : "Return current price and movement data per symbol (external SDK/HTTP adapter)",
       inputs: korean ? "HTTP 요청" : "HTTP requests",
       outputs: korean ? "JSON 시세 응답" : "JSON market responses",
       notes: korean ? "거래소 rate limit과 장애를 고려해야 한다" : "Handle rate limits and external failures",
@@ -775,11 +966,14 @@ const buildCryptoTrackerFallback = (brief, harness, errorMessage = "") => {
   if (includeAlerts) {
     nodes.push({
       key: "alerts",
-      shape: "event",
-      title: korean ? "가격 알림 엔진" : "Price Alert Engine",
+      // Was `event` shape — collapsed into `api` because pub/sub is just
+      // an async-mode call. The "event" semantic now travels on outgoing
+      // edges as edge.mode="event" once Stage 2 ships.
+      shape: "api",
+      title: korean ? "가격 알림 이벤트 발행기" : "Price Alert Event Bridge",
       actor: korean ? "시스템" : "System",
       intent: korean ? "사용자가 지정한 가격 조건을 감지한다" : "Detect user-defined price conditions",
-      behavior: korean ? "조건 충족 시 알림 이벤트를 발행한다" : "Emit alert events when thresholds are reached",
+      behavior: korean ? "조건 충족 시 알림 이벤트를 발행한다 (pub/sub 다리)" : "Emit alert events when thresholds are reached (pub/sub bridge)",
       inputs: korean ? "실시간 가격, 사용자 알림 규칙" : "live prices and alert rules",
       outputs: korean ? "알림 이벤트" : "notification events",
       notes: korean ? "가격 급등락 알림, 목표가 도달 알림" : "Threshold and rapid-change alerts",
@@ -850,20 +1044,22 @@ const buildAgentDiagramFallback = (brief, harness, errorMessage = "") => {
       {
         key: "planner",
         shape: "service",
-        title: korean ? "GPT-5.4 diagram planner" : "GPT-5.4 Diagram Planner",
+        title: korean ? "GPT-5.5 diagram planner" : "GPT-5.5 Diagram Planner",
         actor: korean ? "AI" : "AI",
         intent: korean ? "러프 텍스트를 첫 기본 diagram으로 바꾼다" : "Turn the rough brief into the first diagram",
         behavior: korean ? "도메인, 화면, 서비스, 저장소, 외부 연동을 추론해 노드와 선을 만든다" : "Infer screens, services, persistence, and integrations",
         inputs: korean ? "brief, harness, 현재 diagram" : "brief, harness, and current diagram",
         outputs: korean ? "기본 diagram blueprint" : "diagram blueprint",
-        notes: "gpt-5.4",
+        notes: "gpt-5.5",
         testHint: korean ? "짧은 brief에도 도메인 고유 명사가 살아 있는지 본다" : "Verify domain-specific nouns survive short prompts",
         status: "planned",
       },
       {
         key: "spec",
-        shape: "document",
-        title: korean ? "구현 스펙과 프롬프트" : "Spec and Build Prompt",
+        // Was `document` shape — generated artifacts are produced by
+        // running code, so they belong under `process`.
+        shape: "process",
+        title: korean ? "구현 스펙과 프롬프트 생성" : "Spec and Build Prompt Generation",
         actor: korean ? "AI" : "AI",
         intent: korean ? "도식화를 코드 생성 가능한 명세로 만든다" : "Convert the diagram into an implementation spec",
         behavior: korean ? "전체 빌드 프롬프트와 선택 범위 프롬프트를 생성한다" : "Generate build prompts for full and partial scope",
@@ -901,7 +1097,11 @@ const buildGenericFallback = (brief, harness, errorMessage = "") => {
   const briefTitle = summarizeBriefAsTitle(brief, korean ? "제품" : "Product");
   const frontendShape = harness?.stack?.frontend?.toLowerCase().includes("flutter") ? "screen" : "screen";
   const backendShape = harness?.stack?.backend?.toLowerCase().includes("fastapi") ? "api" : "service";
-  const databaseShape = harness?.stack?.database?.toLowerCase().includes("sqlite") || harness?.stack?.database?.toLowerCase().includes("postgres") ? "database" : "document";
+  // Old code used `document` as a fallback when the harness had no real
+  // persistence — but `document` no longer exists as a shape. Use `database`
+  // unconditionally; an in-memory store is still a database contract that
+  // later nodes can mock or swap.
+  const databaseShape = "database";
   const authNeeded = containsAny(brief.toLowerCase(), ["oauth", "auth", "login", "로그인", "인증", "권한"]);
 
   const nodes = [
@@ -987,8 +1187,10 @@ const buildGenericFallback = (brief, harness, errorMessage = "") => {
   if (authNeeded) {
     nodes.push({
       key: "auth",
-      shape: "auth",
-      title: korean ? "인증 경계" : "Auth Boundary",
+      // Was `auth` shape — collapsed into `service` since auth is a
+      // domain-logic module, just with sensitive scope.
+      shape: "service",
+      title: korean ? "인증/권한 서비스" : "Auth Boundary Service",
       actor: korean ? "시스템" : "System",
       intent: korean ? "로그인과 권한을 확인한다" : "Validate login and permission state",
       behavior: korean ? "인증 상태를 만들고 요청 권한을 통제한다" : "Create auth state and gate protected requests",
@@ -1025,46 +1227,250 @@ const buildGenericFallback = (brief, harness, errorMessage = "") => {
 };
 
 const buildPromptFromBrief = (brief, diagram, harness, strategy) => `
-You are a staff product architect specializing in turning rough app ideas into programming diagrams.
+You are a staff software architect. Your output is the **module graph** for a per-node
+code generator: a downstream system will implement each node as one buildable module
+(1-3 source files + tests) IN THE ORDER YOU IMPLY by the layers below. The nodes you
+produce MUST collectively be sufficient to ship the whole system. If you skip a layer
+(types, storage, error UI, etc.) the codegen will hallucinate it and break later nodes.
 
-Task:
-- Read the user's rough brief.
-- Use the harness settings as hard constraints.
-- Return a concrete, implementation-oriented diagram as valid JSON.
+═══════════════════════════════════════════════════════════════════════════════
+DEFINITION OF A NODE
+═══════════════════════════════════════════════════════════════════════════════
+Each node is ONE buildable module:
+- 1-3 source files in src/<area>/ (no more)
+- One focused test file in tests/<slug>/*.test.{ts,tsx}
+- Implementable + tested in <5 min by a coding agent
+- ONLY imports from earlier layers (lower L number); never re-defines types or
+  utilities that another node already owns.
 
-Rules:
-- Use only the allowed shape values from the schema.
-- Build a diagram that is specific enough for a coding agent to implement.
-- Prefer 4 to 12 nodes unless the brief clearly needs more.
-- Every node must have a distinct role.
-- Preserve named products, vendors, APIs, external systems, and domain nouns from the brief whenever they are architecturally relevant.
-- If the brief is short, infer the likely concrete modules instead of falling back to generic placeholders.
-- Never use placeholder titles like "핵심 사용자 화면" or "핵심 도메인 처리" unless the brief itself is too vague to infer anything better.
-- The diagram is a LOGIC and STRUCTURE model. Do not encode visual design, colors, spacing, typography, or theme details into node titles, descriptions, or notes.
-- Visual design belongs to harness.design and is applied later by the spec and build phases. Ignore harness.design when shaping the diagram.
-- Match the language of the user's brief for titles and descriptions.
-- Treat the harness as implementation environment guidance, not as proof that the user explicitly asked for product features.
-- Do not promote inferred auth, profile locking, session restore, export, notifications, or offline behavior into mandatory core-flow nodes unless the brief clearly asks for them.
-- If you want to recommend useful extra capabilities, express them as note nodes whose title starts with "추천:" instead of mixing them into the core execution flow.
-- Keep the first start/end node limited to the user's explicit entry action, not optional restore or security behavior.
-- Directed edges must represent real execution flow, dependency flow, or data flow.
-- Fill actor, intent, behavior, inputs, outputs, notes, and testHint with useful detail.
-- If strategy is "augment", revise and extend the current diagram into a better full diagram. Do not return a patch.
-- If strategy is "replace", generate a fresh full diagram and only use the current diagram as loose context.
-- Align the architecture with the harness stack, sandbox, and quality policy.
-- Favor concrete modules, APIs, screens, services, auth boundaries, persistence, and testable flow boundaries.
+═══════════════════════════════════════════════════════════════════════════════
+SHAPE VOCABULARY — EXACTLY 9 SHAPES, NO OTHERS ALLOWED
+═══════════════════════════════════════════════════════════════════════════════
+Older diagrams used 16 shapes. The system was simplified — there are now
+EXACTLY 9 shapes you may use. If you produce any other shape value the
+diagram will be rejected. Several previously-distinct shapes were collapsed:
 
-Strategy:
-${strategy}
+   queue / auth / external      → use shape: service
+   event / webhook              → use shape: api
+   decision / document          → use shape: process
+   group                        → use shape: note
 
-Harness:
+The collapse was intentional: those distinctions were better expressed by
+node behavior text or edge metadata, not by extra shapes. Do not try to
+reintroduce them.
+
+═══════════════════════════════════════════════════════════════════════════════
+ARCHITECTURE LAYERS — MANDATORY COVERAGE (one node per layer minimum)
+═══════════════════════════════════════════════════════════════════════════════
+The 8 buildable shapes form 8 architectural layers, ALL mandatory. The 9th
+shape (note) is annotation only and never built. Build order follows L1 → L8.
+
+[L1  MANDATORY] Types & schemas              shape: state
+   Pure interfaces, type aliases, zod/io-ts schemas, reactive stores.
+   NO behavior — only data shape.
+   Examples: "도메인 타입 정의", "Message/Conversation 스키마", "대화 스토어"
+
+[L2  MANDATORY] Persistence                  shape: database
+   How state survives a reload. Always include — even in-memory stores need an
+   explicit contract so later nodes can mock/swap. Add a sibling adapter node
+   (still shape: database, or shape: service for SDK-style wrappers) that
+   actually implements the contract for the target runtime.
+   Examples: "대화 영속 저장소 (localStorage)", "설정 보관소 (sqlite)"
+
+[L3  MANDATORY] Domain services              shape: service
+   Pure business logic. ALSO absorbs: auth/permissions, async queues, third-
+   party SDK adapters. One node per logical capability. Should be unit-testable
+   without DOM or network. Use the title to make the role obvious
+   ("…인증 서비스", "…큐 워커", "OpenAI SDK 어댑터").
+   Examples: "응답 생성 서비스", "메시지 정렬 유틸", "Stripe 결제 어댑터"
+
+[L4  MANDATORY] Bridge / gateway             shape: api
+   The boundary between domain and IO. Browser-only apps still need an api node
+   wrapping fetch/localStorage/IndexedDB. ALSO absorbs: event/webhook
+   publishers — title them as "…이벤트 발행기" or "…웹훅 다리". Async-mode
+   edges between this and consumers express the pub/sub semantic.
+   Examples: "Tauri IPC 브리지", "GPT 호출 게이트웨이", "주문 이벤트 발행기"
+
+[L5  MANDATORY] Orchestration                shape: process
+   Controllers/sagas/pipelines that sequence services + storage + state. ALSO
+   absorbs: branching/decision policies (express branches as multiple outgoing
+   edges) and document/file-generation processes (anything that runs code to
+   emit an artifact — exported CSV, generated PDF, etc).
+   At least one process node per major user action.
+   Examples: "메시지 전송 파이프라인", "결제 분기 라우터", "리포트 PDF 생성기"
+
+[L6  MANDATORY] UI primitives & forms        shape: input
+   Reusable presentational pieces: button, MessageBubble, Composer, Modal,
+   Loading, ErrorBoundary. Each is testable in jsdom independently of any
+   screen. At MINIMUM include: one composer/form node + one Loading/Error node.
+
+[L7  MANDATORY] Screens / pages              shape: screen
+   Composed views the user navigates between. Each screen imports input
+   components + a process for its actions. At least one per major user-visible
+   state.
+
+[L8  MANDATORY] Entry point                  shape: startEnd
+   App mount/hydrate/wire. EXACTLY ONE per diagram. Goes last in build order.
+
+[ANNOTATION]    Suggestions / TODO / groups  shape: note
+   Title MUST start with "추천:" if it's a recommendation for a capability the
+   user did NOT explicitly ask for. Also use note for bounded-context grouping
+   labels and pure design memos. Notes are NEVER built into code.
+
+═══════════════════════════════════════════════════════════════════════════════
+NODE COUNT TARGETS
+═══════════════════════════════════════════════════════════════════════════════
+- Single-purpose tool (calculator, timer):     8-12 nodes
+- Standard interactive app (chat, todo):       14-22 nodes
+- Multi-screen complex app (dashboard, IDE):   18-28 nodes
+
+Hitting ~14-22 for a typical app means: 1 types + 1 storage + 2-3 services +
+1-2 api + 1 state-management + 2-4 process + 3-5 input components + 2-3 screens
++ 1 entry. That's the realistic floor for "buildable end-to-end".
+
+═══════════════════════════════════════════════════════════════════════════════
+HARD RULES
+═══════════════════════════════════════════════════════════════════════════════
+- DO NOT skip any [MANDATORY] layer. If a brief is "just a calculator", you still
+  need types (state), storage (even in-memory), services (the math), api (DOM
+  wrapper), process (orchestrate input→compute→display), input (digit buttons,
+  display), screen (calculator panel), and startEnd (mount).
+- DO NOT mix concerns in one node. "Auth + storage + UI" → split into 3 nodes.
+- DO NOT use generic placeholder titles ("핵심 처리", "도메인 모듈"). Every title
+  must be specific to THIS brief.
+- DO NOT promote inferred features (auth, sync, notifications) into MANDATORY
+  layers unless the brief asks. Suggest them as note nodes prefixed "추천:".
+- DO NOT encode visual design (colors, fonts, spacing). That belongs to harness.design.
+- Edge direction: A → B means "A calls/depends on B at RUNTIME". This is
+  documentation only — the build engine reorders by layer automatically.
+
+═══════════════════════════════════════════════════════════════════════════════
+SHIPPABILITY SELF-CHECK — THE GRAPH MUST PASS THIS BEFORE YOU RETURN
+═══════════════════════════════════════════════════════════════════════════════
+This graph is the COMPLETE, AUTHORITATIVE specification of the system. A coding
+agent will build only what your graph says. If a piece is missing from the graph,
+it will be missing from the running app.
+
+Do this MENTAL SIMULATION before finalizing your response:
+
+  1. Imagine all of your nodes are now built into a real codebase.
+  2. The user opens the codebase and types the natural "run" command for this
+     stack (e.g. "pnpm dev" for web/desktop, "node bin/cli.js" for CLI,
+     "pnpm start" for server, etc).
+  3. Does the app actually start, render its first interactive surface, and
+     persist data in a way the user can verify?
+
+If your answer is NO, the graph is INCOMPLETE. Find what is missing and ADD
+nodes for it. Common omissions to scan for (any of these missing → fix it):
+
+  □ Application entry/host file (HTML for web/desktop, bin script for CLI,
+    server bootstrap for API). It is NOT enough to have a startEnd node that
+    only "wires modules" — there must also be a node owning the actual
+    entry artifact a runtime loads first.
+  □ Build / dev-server configuration (vite.config / webpack / rollup /
+    electron-builder / cargo manifest / tsconfig for libs). Whatever your
+    stack needs to compile and run.
+  □ Real platform adapter implementation, not just the contract. A
+    "persistence contract" node alone does not store anything — there must
+    be a sibling node implementing it for the target runtime (browser
+    localStorage, Tauri IPC, sqlite via node, etc).
+  □ package.json scripts wiring (dev / build / start / test). One node should
+    own these or another node's behavior should explicitly create them.
+  □ One smoke / integration test node that actually mounts/boots the system
+    and asserts a single happy path round-trip (e.g. "mount → click →
+    storage write → reload → state restored"). Unit tests on individual
+    modules are not enough.
+  □ Environment / secret configuration if the brief implies external services.
+  □ Output artifacts the user explicitly asked for (downloadable file,
+    generated PDF, exported config, etc) — produced by a real node, not
+    implied.
+
+After scanning the list above, ask yourself: "Could a stranger receive ONLY
+this graph, run codex over it, and ship the app the same hour?" If yes, you
+are done. If no, add the missing nodes.
+
+The number of additional nodes from this check is typically 2–4. Do not
+hesitate to push your total node count higher than the sizing target above
+if shippability requires it — sizing is a lower bound, not a ceiling.
+
+═══════════════════════════════════════════════════════════════════════════════
+PER-NODE FIELDS YOU MUST FILL
+═══════════════════════════════════════════════════════════════════════════════
+- title:    specific to THIS app, in the brief's language
+- actor:    user | system | scheduler | external | (specific role)
+- intent:   1 sentence, "this node exists to..."
+- behavior: 2-4 sentences of WHAT the module concretely does; cite types it
+            defines/imports; cite functions it exports.
+- inputs:   typed shape of incoming data (e.g. "{ threadId: string, text: string }")
+- outputs:  typed shape of outgoing data
+- notes:    edge cases, what NOT to include, dependencies on other nodes
+- testHint: ≥1 happy-path test + ≥1 edge case (e.g. "empty list", "network fail")
+
+═══════════════════════════════════════════════════════════════════════════════
+PER-EDGE FIELDS YOU MUST FILL (the cross-module contract)
+═══════════════════════════════════════════════════════════════════════════════
+After the 16→9 shape collapse, edges carry meaning that used to require
+extra shapes. Every edge MUST fill these eight fields. Empty strings are
+fine when the field doesn't apply, but all keys must be present:
+
+- sourceKey, targetKey: the two node keys this edge connects
+- relation:  short verb phrase ("sends message", "loads from cache")
+- notes:     longer explanation if the relation isn't obvious
+- lineStyle: smoothstep | straight | step (visual only)
+- animated:  true if the edge represents a live/active flow
+- dataShape: TYPED PAYLOAD that flows source→target. Use the same TS-style
+             shape literal as node.inputs/outputs ("{ id: string, text: string }",
+             "Message[]", "void", etc). This is the cross-module contract — be
+             precise. Empty string only when truly nothing flows (rare).
+- mode:      "sync" (default direct call) | "async" (caller doesn't wait —
+             buffer/queue between source and target) | "event" (source
+             publishes, target is one of N subscribers). This replaces the
+             old event/queue shapes.
+- condition: branching predicate, e.g. "if user is authenticated" or
+             "when score >= threshold". Empty for unconditional edges.
+             Multiple outgoing edges from one process node, each with its
+             own condition, replace the old "decision" shape.
+- iteration: flow-control hint when control re-enters this edge multiple
+             times — e.g. "loop until queue empty", "fan-out 1:N", "retry
+             with exponential backoff up to 3 times". Empty for one-shot calls.
+
+Why these fields matter to the build engine: the per-node code generator
+reads ALL incoming edges of the node it's building. dataShape becomes the
+exact import contract from prior nodes (kills cross-node type guessing).
+mode tells the generator whether to write a direct call or a publish/queue
+push. condition turns into the if-statement at the call site. iteration
+tells the generator to wrap in a loop/Promise.all/retry helper.
+
+═══════════════════════════════════════════════════════════════════════════════
+STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+${strategy === "augment"
+  ? "augment: revise and EXTEND the current diagram. Add missing layers that the user's new request implies. Return a fresh full diagram (not a patch). Preserve existing node ids when the role is unchanged."
+  : "replace: generate a fresh full diagram from the brief. The current diagram is loose context only."}
+
+═══════════════════════════════════════════════════════════════════════════════
+HARNESS (implementation environment — use as constraints, not as feature list)
+═══════════════════════════════════════════════════════════════════════════════
 ${JSON.stringify(harness ?? null, null, 2)}
 
-Current diagram context:
+═══════════════════════════════════════════════════════════════════════════════
+CURRENT DIAGRAM CONTEXT (for augment mode)
+═══════════════════════════════════════════════════════════════════════════════
 ${JSON.stringify(diagram ?? null, null, 2)}
 
-User brief:
+═══════════════════════════════════════════════════════════════════════════════
+USER BRIEF
+═══════════════════════════════════════════════════════════════════════════════
 ${brief}
+
+Now produce the module graph. Before returning, mentally verify THREE things:
+  1. Every MANDATORY architecture layer (L1 state, L2 database, L3 service,
+     L4 api, L5 process, L6 input, L7 screen, L8 startEnd) has at least one node.
+  2. Every node uses ONE of the 9 allowed shapes (state, database, service,
+     api, process, input, screen, startEnd, note). No queue/auth/external/
+     event/decision/document/group — those are gone.
+  3. The SHIPPABILITY SELF-CHECK above passes — a stranger could ship from
+     your graph alone, no missing entry/build/adapter/smoke nodes.
 `.trim();
 
 const buildPromptFromDiagram = (diagram, scope, harness) => {
@@ -1279,7 +1685,7 @@ const runCodexStructuredOutput = async ({ prompt, schema, name, timeoutMs = 6000
   const args = [
     "exec",
     "-m",
-    "gpt-5.4",
+    "gpt-5.5",
     "--skip-git-repo-check",
     "--sandbox",
     "read-only",
@@ -1360,56 +1766,75 @@ const slugifyNodeTitle = (title, nodeId) => {
   return `${base}-${suffix}`;
 };
 
-const deriveBuildOrder = (diagram) => {
-  const skip = new Set(["note", "group"]);
-  const runtimeNodes = (diagram?.nodes || []).filter((n) => !skip.has(n.shape));
-  const runtimeIds = new Set(runtimeNodes.map((n) => n.id));
+// Architecture-layer build priority. Lower number = built FIRST.
+//
+// Rationale: a developer implements an app bottom-up — types before storage,
+// storage before services, services before bridges, orchestration before UI,
+// entry point last. Each layer can only import from layers BELOW it. Edge
+// direction in the diagram represents RUNTIME flow (A calls B), which is the
+// *opposite* of what build order needs, so we intentionally ignore edges for
+// ordering (they're still drawn on the canvas for human reference).
+//
+// After the 16→9 shape collapse there are 8 buildable shapes mapping to 8
+// layers. The 9th shape (`note`) is annotation only and excluded from build
+// order entirely (see `skip` set above). Removed shapes
+// (queue/auth/external/event/decision/document/group) migrate to one of the
+// 8 via LEGACY_SHAPE_MAP — server-side migration runs before this lookup.
+const SHAPE_PRIORITY = {
+  state: 1,      // L1: type defs, schemas, reactive stores — pure data shape
+  database: 2,   // L2: persistence (localStorage, sqlite, indexeddb)
+  service: 3,    // L3: domain logic (also absorbs auth/queue/external)
+  api: 4,        // L4: bridge / gateway (also absorbs event/webhook)
+  process: 5,    // L5: orchestration (also absorbs decision/document-generation)
+  input: 6,      // L6: UI primitives — forms, buttons
+  screen: 7,     // L7: composed pages
+  startEnd: 8,   // L8: entry point — mount, hydrate, wire everything
+};
 
-  const incoming = new Map(runtimeNodes.map((n) => [n.id, new Set()]));
-  const outgoing = new Map(runtimeNodes.map((n) => [n.id, new Set()]));
+const deriveBuildOrder = (diagram) => {
+  // Only `note` is skipped now — the old `group` shape was legacy-migrated
+  // into `note` before reaching this code.
+  const skip = new Set(["note"]);
+  const runtimeNodes = (diagram?.nodes || []).filter((n) => !skip.has(n.shape));
+  const priorityOf = (n) => SHAPE_PRIORITY[n.shape] ?? 50;
+
+  // Sort by (shape priority, x position, original index). Deterministic and
+  // independent of the edge directions the LLM happened to draw.
+  const ordered = runtimeNodes
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const pa = priorityOf(a.n);
+      const pb = priorityOf(b.n);
+      if (pa !== pb) return pa - pb;
+      const ax = a.n.position?.x ?? 0;
+      const bx = b.n.position?.x ?? 0;
+      if (ax !== bx) return ax - bx;
+      return a.i - b.i;
+    })
+    .map(({ n }) => n.id);
+
+  // "cycles" here flags **back-edges** relative to shape priority: e.g., a screen
+  // whose edge points at a database. That's legitimate in runtime (UI reads from DB,
+  // DB pushes updates back), but it signals the diagram has feedback loops the user
+  // should be aware of. Does not affect order.
+  const runtimeIds = new Set(runtimeNodes.map((n) => n.id));
+  const nodeById = new Map(runtimeNodes.map((n) => [n.id, n]));
+  let cycles = false;
   for (const edge of diagram?.edges || []) {
     if (!runtimeIds.has(edge.source) || !runtimeIds.has(edge.target)) continue;
     if (edge.source === edge.target) continue;
-    incoming.get(edge.target).add(edge.source);
-    outgoing.get(edge.source).add(edge.target);
-  }
-
-  const indexOf = new Map(runtimeNodes.map((n, i) => [n.id, i]));
-  const sortKey = (a, b) => {
-    const na = runtimeNodes[indexOf.get(a)];
-    const nb = runtimeNodes[indexOf.get(b)];
-    const ax = na?.position?.x ?? 0;
-    const bx = nb?.position?.x ?? 0;
-    if (ax !== bx) return ax - bx;
-    return indexOf.get(a) - indexOf.get(b);
-  };
-
-  const ready = runtimeNodes.filter((n) => incoming.get(n.id).size === 0).map((n) => n.id);
-  ready.sort(sortKey);
-
-  const ordered = [];
-  while (ready.length > 0) {
-    const next = ready.shift();
-    ordered.push(next);
-    for (const downstream of outgoing.get(next)) {
-      incoming.get(downstream).delete(next);
-      if (incoming.get(downstream).size === 0) {
-        ready.push(downstream);
-        ready.sort(sortKey);
-      }
+    const s = nodeById.get(edge.source);
+    const t = nodeById.get(edge.target);
+    if (priorityOf(s) > priorityOf(t)) {
+      cycles = true;
+      break;
     }
   }
 
-  const orderedSet = new Set(ordered);
-  const leftovers = runtimeNodes
-    .map((n) => n.id)
-    .filter((id) => !orderedSet.has(id))
-    .sort(sortKey);
-  const cycles = leftovers.length > 0;
-  return { order: [...ordered, ...leftovers], cycles };
+  return { order: ordered, cycles };
 };
 
-const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
+const buildNodePrompt = ({ node, diagram, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
   const design = harness?.design ? JSON.stringify(harness.design, null, 2) : "null";
   const nodeSlug = slugifyNodeTitle(node.title, node.id);
   const priorContext = Array.isArray(previouslyBuilt) && previouslyBuilt.length > 0
@@ -1417,6 +1842,57 @@ const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, 
         .map((p) => `- ${p.title} [${p.shape}]: files=${(p.files || []).slice(0, 4).join(", ")}${(p.files || []).length > 4 ? "..." : ""}`)
         .join("\n")
     : "(none — this is the first node)";
+
+  // Incoming edges — what other nodes call INTO this node. Each carries the
+  // structured cross-module contract (dataShape, mode, condition, iteration)
+  // populated by the diagram LLM. This block becomes the import contract
+  // the codex agent treats as authoritative when writing imports/handlers.
+  // Without this, codex would have to guess at types and call modes from
+  // free-text behavior fields → cross-node hallucinations.
+  const incomingEdges = Array.isArray(diagram?.edges)
+    ? diagram.edges.filter((e) => e.target === node.id)
+    : [];
+  const nodeById = new Map((diagram?.nodes || []).map((n) => [n.id, n]));
+  const incomingBlock = incomingEdges.length === 0
+    ? "(none — this node has no inbound calls; it likely owns its own trigger or is a leaf entry)"
+    : incomingEdges
+        .map((e, i) => {
+          const src = nodeById.get(e.source);
+          const srcLabel = src ? `${src.title} [${src.shape}]` : `(unknown source ${e.source})`;
+          const meta = [
+            `relation: ${e.data?.relation ?? e.relation ?? "(none)"}`,
+            `dataShape: ${e.data?.dataShape ?? e.dataShape ?? "(unspecified)"}`,
+            `mode: ${e.data?.mode ?? e.mode ?? "sync"}`,
+            ...(e.data?.condition || e.condition ? [`condition: ${e.data?.condition ?? e.condition}`] : []),
+            ...(e.data?.iteration || e.iteration ? [`iteration: ${e.data?.iteration ?? e.iteration}`] : []),
+            ...(e.data?.notes || e.notes ? [`notes: ${e.data?.notes ?? e.notes}`] : []),
+          ].join(" | ");
+          return `${i + 1}. ${srcLabel} → THIS NODE\n   ${meta}`;
+        })
+        .join("\n");
+
+  // Outgoing edges — what THIS node calls. The agent uses these to know
+  // which downstream nodes' modules will exist later. mode="async" or
+  // "event" means the call site should not await synchronously.
+  const outgoingEdges = Array.isArray(diagram?.edges)
+    ? diagram.edges.filter((e) => e.source === node.id)
+    : [];
+  const outgoingBlock = outgoingEdges.length === 0
+    ? "(none — this node is a sink; its outputs are only stored or rendered locally)"
+    : outgoingEdges
+        .map((e, i) => {
+          const tgt = nodeById.get(e.target);
+          const tgtLabel = tgt ? `${tgt.title} [${tgt.shape}]` : `(unknown target ${e.target})`;
+          const meta = [
+            `relation: ${e.data?.relation ?? e.relation ?? "(none)"}`,
+            `dataShape: ${e.data?.dataShape ?? e.dataShape ?? "(unspecified)"}`,
+            `mode: ${e.data?.mode ?? e.mode ?? "sync"}`,
+            ...(e.data?.condition || e.condition ? [`condition: ${e.data?.condition ?? e.condition}`] : []),
+            ...(e.data?.iteration || e.iteration ? [`iteration: ${e.data?.iteration ?? e.iteration}`] : []),
+          ].join(" | ");
+          return `${i + 1}. THIS NODE → ${tgtLabel}\n   ${meta}`;
+        })
+        .join("\n");
 
   const bootstrapBlock = isFirst
     ? `
@@ -1464,15 +1940,52 @@ Target node (implement exactly this, no more):
 - notes: ${node.notes}
 - testHint: ${node.testHint}
 
+Cross-module contracts the diagram defines for THIS node — treat as the
+authoritative interface. Do NOT invent types or modes that contradict these.
+If a dataShape is set, that is the EXACT TypeScript-style payload that
+crosses the edge. If mode="async" or "event", the call site must NOT await
+synchronously — wrap in queue/event-emitter as appropriate.
+
+INCOMING edges (other nodes call into this one):
+${incomingBlock}
+
+OUTGOING edges (this node calls these — they may not exist yet, but their
+contracts are fixed by the dataShape/mode below; build a thin call helper
+or import that conforms when the target node lands):
+${outgoingBlock}
+
 ${bootstrapBlock}
 
+CONTEXT-DISCOVERY — DO THIS FIRST (required, before writing any code):
+1. Read package.json and tsconfig.json so you know the framework, test runner,
+   and module setup.
+2. For EACH "already-built node" listed above, OPEN its files (the paths are
+   shown). Note the exact exported types, function signatures, and named exports.
+3. NEVER invent a type that another node already defines. If you need a Message
+   type and a prior node defined it, IMPORT IT — do not redeclare.
+4. If a needed export is missing from prior nodes, treat that as a bug in the
+   diagram and either (a) add the missing export to the prior node's files
+   (only if it's clearly a tiny gap) or (b) write a NOTE in your final summary
+   explaining what's missing so the user can fix the diagram.
+
 Work rules for this node:
-1. Write the source file(s) for this node, prefer src/<area>/ structure.
-2. Write comprehensive tests in tests/${nodeSlug}/*.test.ts covering every branch implied by behavior, inputs, outputs, and testHint. Use vitest.
-3. Run the whole workspace's vitest suite and make sure it is green before finishing.
+1. Write the source file(s) for this node, prefer src/<area>/ structure that
+   matches the node's shape (state→src/types, database→src/store,
+   service→src/services, api→src/api, process→src/orchestration,
+   input→src/components, screen→src/screens, startEnd→src/main.ts*).
+2. Write comprehensive tests in tests/${nodeSlug}/*.test.ts covering every
+   branch implied by behavior, inputs, outputs, and testHint. Use vitest.
+   Test BOTH the happy path AND at least one edge case.
+3. Run the whole workspace's vitest suite and make sure it is green before
+   finishing. Do not finish on red.
 4. Run \`npx tsc --noEmit\` and make sure it is green before finishing.
-5. Do NOT delete or edit files created by prior nodes unless the current node's behavior explicitly requires it.
-6. End with a terse summary: "Files added: ..." and "Files modified: ...".
+5. Do NOT delete or edit files created by prior nodes unless the current node's
+   behavior explicitly requires it. If you must edit a prior file, keep the
+   change minimal and additive (export new symbols, do not change existing
+   signatures).
+6. End with a terse summary: "Files added: ..." and "Files modified: ..."
+   Include any IMPORT mismatches you noticed in prior nodes (so the user
+   can decide whether to refine the diagram).
 
 ${fixBlock}
 
@@ -1491,7 +2004,7 @@ const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 90000
   const args = [
     "exec",
     "-m",
-    "gpt-5.4",
+    "gpt-5.5",
     "--skip-git-repo-check",
     "--sandbox",
     "workspace-write",
@@ -1749,6 +2262,7 @@ app.post("/api/ai/diagram", async (req, res) => {
         source: "fallback",
         generatedAt: new Date().toISOString(),
         diagram: generatedDiagram,
+        coverage: validateDiagramCoverage(generatedDiagram),
         error: status.detail,
       });
       return;
@@ -1762,12 +2276,17 @@ app.post("/api/ai/diagram", async (req, res) => {
       timeoutMs: 600000,
     });
     const sanitized = sanitizeDiagramBlueprint(parsed, brief, harness);
+    const coverage = validateDiagramCoverage(sanitized);
+    if (!coverage.ok) {
+      console.warn(`[diagram] missing layers: ${coverage.missingLayers.join(", ")}`);
+    }
 
     res.json({
       ok: true,
       source: "codex",
       generatedAt: new Date().toISOString(),
       diagram: sanitized,
+      coverage,
       raw,
     });
   } catch (error) {
@@ -1783,15 +2302,16 @@ app.post("/api/ai/diagram", async (req, res) => {
       source: "fallback",
       generatedAt: new Date().toISOString(),
       diagram: generatedDiagram,
+      coverage: validateDiagramCoverage(generatedDiagram),
       error: message,
     });
   }
 });
 
 app.post("/api/ai/spec", async (req, res) => {
-  const { diagram, requestedMode, harness } = req.body ?? {};
+  const { diagram: rawDiagram, requestedMode, harness } = req.body ?? {};
 
-  if (!diagram || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) {
+  if (!rawDiagram || !Array.isArray(rawDiagram.nodes) || !Array.isArray(rawDiagram.edges)) {
     res.status(400).json({
       ok: false,
       error: "diagram payload is required",
@@ -1799,6 +2319,8 @@ app.post("/api/ai/spec", async (req, res) => {
     return;
   }
 
+  // Migrate legacy shapes so spec prompt + scope detection see the new vocabulary.
+  const diagram = migrateDiagramShapes(rawDiagram);
   const scope = normalizeScope(diagram, requestedMode);
 
   try {
@@ -1837,11 +2359,13 @@ app.post("/api/ai/spec", async (req, res) => {
 });
 
 app.post("/api/ai/build-order", (req, res) => {
-  const { diagram } = req.body ?? {};
-  if (!diagram || !Array.isArray(diagram.nodes)) {
+  const rawDiagram = req.body?.diagram;
+  if (!rawDiagram || !Array.isArray(rawDiagram.nodes)) {
     res.status(400).json({ ok: false, error: "diagram payload required" });
     return;
   }
+  // Migrate up front so SHAPE_PRIORITY lookup works on legacy saved diagrams.
+  const diagram = migrateDiagramShapes(rawDiagram);
   try {
     const { order, cycles } = deriveBuildOrder(diagram);
     res.json({ ok: true, order, cycles });
@@ -1851,17 +2375,20 @@ app.post("/api/ai/build-order", (req, res) => {
 });
 
 app.post("/api/ai/build-node", async (req, res) => {
-  const { rootPath, diagram, harness, nodeId, previouslyBuilt, isFirst, maxRetries } = req.body ?? {};
+  const { rootPath, diagram: rawDiagram, harness, nodeId, previouslyBuilt, isFirst, maxRetries } = req.body ?? {};
   const retries = Number.isInteger(maxRetries) ? Math.max(0, Math.min(5, maxRetries)) : 3;
 
   if (typeof rootPath !== "string" || rootPath.trim().length === 0) {
     res.status(400).json({ ok: false, error: "rootPath is required" });
     return;
   }
-  if (!diagram || !Array.isArray(diagram.nodes)) {
+  if (!rawDiagram || !Array.isArray(rawDiagram.nodes)) {
     res.status(400).json({ ok: false, error: "diagram payload required" });
     return;
   }
+  // Migrate legacy shapes so buildNodePrompt's folder hints + SHAPE_PRIORITY
+  // sorting both see the new vocabulary.
+  const diagram = migrateDiagramShapes(rawDiagram);
   const node = diagram.nodes.find((n) => n.id === nodeId);
   if (!node) {
     res.status(400).json({ ok: false, error: "nodeId not found in diagram" });
@@ -1894,6 +2421,7 @@ app.post("/api/ai/build-node", async (req, res) => {
       attempt += 1;
       const prompt = buildNodePrompt({
         node,
+        diagram,           // pass the migrated diagram so incoming/outgoing edge metadata is visible
         harness,
         previouslyBuilt: priorList,
         previousTestFailure,
