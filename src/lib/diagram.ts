@@ -121,9 +121,6 @@ export const createInitialFlow = (): { nodes: DiagramNode[]; edges: DiagramEdge[
   };
 };
 
-// New edges start with empty metadata fields. Users fill them via the
-// inspector (or the LLM populates them when the brief implies async/event/
-// branching semantics).
 export const createEdge = (source: string, target: string, relation = "flows to"): DiagramEdge => ({
   id: crypto.randomUUID(),
   source,
@@ -138,10 +135,6 @@ export const createEdge = (source: string, target: string, relation = "flows to"
     notes: "",
     lineStyle: "smoothstep",
     animated: false,
-    dataShape: "",
-    mode: "sync",
-    condition: "",
-    iteration: "",
   },
 });
 
@@ -245,9 +238,6 @@ export const createFlowFromBlueprint = (blueprint: DiagramBlueprint): { nodes: D
 
     const created = createEdge(source, target, edge.relation);
     const lineStyle = normalizeLineStyle(edge.lineStyle);
-    // Propagate any of the four optional metadata fields the LLM filled in.
-    // Empty/undefined → empty string so the inspector renders blank-but-editable
-    // instead of `undefined`.
     edges.push({
       ...created,
       type: lineStyle,
@@ -257,10 +247,6 @@ export const createFlowFromBlueprint = (blueprint: DiagramBlueprint): { nodes: D
         notes: edge.notes,
         lineStyle,
         animated: edge.animated,
-        dataShape: edge.dataShape ?? "",
-        mode: edge.mode ?? "sync",
-        condition: edge.condition ?? "",
-        iteration: edge.iteration ?? "",
       },
     });
   }
@@ -297,10 +283,6 @@ export const buildDiagramDocument = (
     notes: edge.data?.notes ?? "",
     lineStyle: edge.data?.lineStyle ?? "smoothstep",
     animated: edge.data?.animated ?? false,
-    dataShape: edge.data?.dataShape ?? "",
-    mode: edge.data?.mode ?? "sync",
-    condition: edge.data?.condition ?? "",
-    iteration: edge.data?.iteration ?? "",
   })),
   scope: {
     mode: selectedNodeIds.length > 0 ? "selection" : "full",

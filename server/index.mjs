@@ -133,15 +133,7 @@ const DIAGRAM_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        // dataShape/mode/condition/iteration are required so the LLM ALWAYS
-        // fills them — even with empty strings. Required-but-empty is
-        // strictly better than optional: it forces the model to think about
-        // each field for every edge, and we get a structured trail of
-        // "this edge has no condition" vs "the model forgot the field".
-        required: [
-          "sourceKey", "targetKey", "relation", "notes", "lineStyle", "animated",
-          "dataShape", "mode", "condition", "iteration",
-        ],
+        required: ["sourceKey", "targetKey", "relation", "notes", "lineStyle", "animated"],
         properties: {
           sourceKey: { type: "string" },
           targetKey: { type: "string" },
@@ -152,12 +144,6 @@ const DIAGRAM_SCHEMA = {
             enum: ["smoothstep", "straight", "step"],
           },
           animated: { type: "boolean" },
-          // The four NEW edge-metadata fields (Stage 2 of the 16→9 collapse).
-          // See src/lib/types.ts DiagramEdgeData for full semantics.
-          dataShape: { type: "string" },
-          mode: { type: "string", enum: ["sync", "async", "event"] },
-          condition: { type: "string" },
-          iteration: { type: "string" },
         },
       },
     },
@@ -1407,41 +1393,6 @@ PER-NODE FIELDS YOU MUST FILL
 - testHint: ≥1 happy-path test + ≥1 edge case (e.g. "empty list", "network fail")
 
 ═══════════════════════════════════════════════════════════════════════════════
-PER-EDGE FIELDS YOU MUST FILL (the cross-module contract)
-═══════════════════════════════════════════════════════════════════════════════
-After the 16→9 shape collapse, edges carry meaning that used to require
-extra shapes. Every edge MUST fill these eight fields. Empty strings are
-fine when the field doesn't apply, but all keys must be present:
-
-- sourceKey, targetKey: the two node keys this edge connects
-- relation:  short verb phrase ("sends message", "loads from cache")
-- notes:     longer explanation if the relation isn't obvious
-- lineStyle: smoothstep | straight | step (visual only)
-- animated:  true if the edge represents a live/active flow
-- dataShape: TYPED PAYLOAD that flows source→target. Use the same TS-style
-             shape literal as node.inputs/outputs ("{ id: string, text: string }",
-             "Message[]", "void", etc). This is the cross-module contract — be
-             precise. Empty string only when truly nothing flows (rare).
-- mode:      "sync" (default direct call) | "async" (caller doesn't wait —
-             buffer/queue between source and target) | "event" (source
-             publishes, target is one of N subscribers). This replaces the
-             old event/queue shapes.
-- condition: branching predicate, e.g. "if user is authenticated" or
-             "when score >= threshold". Empty for unconditional edges.
-             Multiple outgoing edges from one process node, each with its
-             own condition, replace the old "decision" shape.
-- iteration: flow-control hint when control re-enters this edge multiple
-             times — e.g. "loop until queue empty", "fan-out 1:N", "retry
-             with exponential backoff up to 3 times". Empty for one-shot calls.
-
-Why these fields matter to the build engine: the per-node code generator
-reads ALL incoming edges of the node it's building. dataShape becomes the
-exact import contract from prior nodes (kills cross-node type guessing).
-mode tells the generator whether to write a direct call or a publish/queue
-push. condition turns into the if-statement at the call site. iteration
-tells the generator to wrap in a loop/Promise.all/retry helper.
-
-═══════════════════════════════════════════════════════════════════════════════
 STRATEGY
 ═══════════════════════════════════════════════════════════════════════════════
 ${strategy === "augment"
@@ -1834,7 +1785,7 @@ const deriveBuildOrder = (diagram) => {
   return { order: ordered, cycles };
 };
 
-const buildNodePrompt = ({ node, diagram, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
+const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
   const design = harness?.design ? JSON.stringify(harness.design, null, 2) : "null";
   const nodeSlug = slugifyNodeTitle(node.title, node.id);
   const priorContext = Array.isArray(previouslyBuilt) && previouslyBuilt.length > 0
@@ -1842,57 +1793,6 @@ const buildNodePrompt = ({ node, diagram, harness, previouslyBuilt, previousTest
         .map((p) => `- ${p.title} [${p.shape}]: files=${(p.files || []).slice(0, 4).join(", ")}${(p.files || []).length > 4 ? "..." : ""}`)
         .join("\n")
     : "(none — this is the first node)";
-
-  // Incoming edges — what other nodes call INTO this node. Each carries the
-  // structured cross-module contract (dataShape, mode, condition, iteration)
-  // populated by the diagram LLM. This block becomes the import contract
-  // the codex agent treats as authoritative when writing imports/handlers.
-  // Without this, codex would have to guess at types and call modes from
-  // free-text behavior fields → cross-node hallucinations.
-  const incomingEdges = Array.isArray(diagram?.edges)
-    ? diagram.edges.filter((e) => e.target === node.id)
-    : [];
-  const nodeById = new Map((diagram?.nodes || []).map((n) => [n.id, n]));
-  const incomingBlock = incomingEdges.length === 0
-    ? "(none — this node has no inbound calls; it likely owns its own trigger or is a leaf entry)"
-    : incomingEdges
-        .map((e, i) => {
-          const src = nodeById.get(e.source);
-          const srcLabel = src ? `${src.title} [${src.shape}]` : `(unknown source ${e.source})`;
-          const meta = [
-            `relation: ${e.data?.relation ?? e.relation ?? "(none)"}`,
-            `dataShape: ${e.data?.dataShape ?? e.dataShape ?? "(unspecified)"}`,
-            `mode: ${e.data?.mode ?? e.mode ?? "sync"}`,
-            ...(e.data?.condition || e.condition ? [`condition: ${e.data?.condition ?? e.condition}`] : []),
-            ...(e.data?.iteration || e.iteration ? [`iteration: ${e.data?.iteration ?? e.iteration}`] : []),
-            ...(e.data?.notes || e.notes ? [`notes: ${e.data?.notes ?? e.notes}`] : []),
-          ].join(" | ");
-          return `${i + 1}. ${srcLabel} → THIS NODE\n   ${meta}`;
-        })
-        .join("\n");
-
-  // Outgoing edges — what THIS node calls. The agent uses these to know
-  // which downstream nodes' modules will exist later. mode="async" or
-  // "event" means the call site should not await synchronously.
-  const outgoingEdges = Array.isArray(diagram?.edges)
-    ? diagram.edges.filter((e) => e.source === node.id)
-    : [];
-  const outgoingBlock = outgoingEdges.length === 0
-    ? "(none — this node is a sink; its outputs are only stored or rendered locally)"
-    : outgoingEdges
-        .map((e, i) => {
-          const tgt = nodeById.get(e.target);
-          const tgtLabel = tgt ? `${tgt.title} [${tgt.shape}]` : `(unknown target ${e.target})`;
-          const meta = [
-            `relation: ${e.data?.relation ?? e.relation ?? "(none)"}`,
-            `dataShape: ${e.data?.dataShape ?? e.dataShape ?? "(unspecified)"}`,
-            `mode: ${e.data?.mode ?? e.mode ?? "sync"}`,
-            ...(e.data?.condition || e.condition ? [`condition: ${e.data?.condition ?? e.condition}`] : []),
-            ...(e.data?.iteration || e.iteration ? [`iteration: ${e.data?.iteration ?? e.iteration}`] : []),
-          ].join(" | ");
-          return `${i + 1}. THIS NODE → ${tgtLabel}\n   ${meta}`;
-        })
-        .join("\n");
 
   const bootstrapBlock = isFirst
     ? `
@@ -1939,20 +1839,6 @@ Target node (implement exactly this, no more):
 - outputs: ${node.outputs}
 - notes: ${node.notes}
 - testHint: ${node.testHint}
-
-Cross-module contracts the diagram defines for THIS node — treat as the
-authoritative interface. Do NOT invent types or modes that contradict these.
-If a dataShape is set, that is the EXACT TypeScript-style payload that
-crosses the edge. If mode="async" or "event", the call site must NOT await
-synchronously — wrap in queue/event-emitter as appropriate.
-
-INCOMING edges (other nodes call into this one):
-${incomingBlock}
-
-OUTGOING edges (this node calls these — they may not exist yet, but their
-contracts are fixed by the dataShape/mode below; build a thin call helper
-or import that conforms when the target node lands):
-${outgoingBlock}
 
 ${bootstrapBlock}
 
@@ -2421,7 +2307,6 @@ app.post("/api/ai/build-node", async (req, res) => {
       attempt += 1;
       const prompt = buildNodePrompt({
         node,
-        diagram,           // pass the migrated diagram so incoming/outgoing edge metadata is visible
         harness,
         previouslyBuilt: priorList,
         previousTestFailure,

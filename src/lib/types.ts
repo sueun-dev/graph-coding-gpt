@@ -38,33 +38,11 @@ export type DiagramNodeData = {
   accent: string;
 };
 
-// Edges carry semantic metadata so the build LLM has a structured contract
-// between modules instead of relying on free-text inference. The four NEW
-// fields (dataShape, mode, condition, iteration) absorb the responsibilities
-// that used to live in the deleted shapes (event/queue/decision):
-//   - dataShape: typed payload that crosses A→B (kills cross-node type
-//     hallucination — codex sees "Message[]" instead of guessing).
-//   - mode:      sync (default) | async (queued) | event (pub/sub). This is
-//     the spot where the old `event`/`queue` semantic now lives.
-//   - condition: "if user authed" — branching predicate. Replaces the old
-//     `decision` shape (a process node with multiple outgoing edges, each
-//     edge carrying its own condition).
-//   - iteration: "loop until empty" / "fan-out 1:N" — flow-control hint
-//     that used to be impossible to express on a static diagram.
-//
-// All four are OPTIONAL strings; older saved diagrams parse cleanly because
-// they're absent. Empty strings render as "no extra constraint" in the UI.
-export type EdgeMode = "sync" | "async" | "event";
-
 export type DiagramEdgeData = {
   relation: string;
   notes: string;
   lineStyle: LineStyle;
   animated: boolean;
-  dataShape?: string;
-  mode?: EdgeMode;
-  condition?: string;
-  iteration?: string;
 };
 
 export type DiagramNode = Node<DiagramNodeData>;
@@ -95,10 +73,6 @@ export type DiagramDocument = {
     notes: string;
     lineStyle: LineStyle;
     animated: boolean;
-    dataShape?: string;
-    mode?: EdgeMode;
-    condition?: string;
-    iteration?: string;
   }>;
   scope: {
     mode: "full" | "selection";
@@ -162,10 +136,6 @@ export type DiagramBlueprint = {
     notes: string;
     lineStyle: LineStyle;
     animated: boolean;
-    dataShape?: string;
-    mode?: EdgeMode;
-    condition?: string;
-    iteration?: string;
   }>;
 };
 

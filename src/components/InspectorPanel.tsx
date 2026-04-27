@@ -1,5 +1,5 @@
 import type { ChangeEvent } from "react";
-import type { DiagramEdge, DiagramNode, EdgeMode, LineStyle, NodeStatus } from "../lib/types";
+import type { DiagramEdge, DiagramNode, LineStyle, NodeStatus } from "../lib/types";
 
 type InspectorProps = {
   selectedNode: DiagramNode | null;
@@ -11,11 +11,6 @@ type InspectorProps = {
 
 const statusOptions: NodeStatus[] = ["planned", "active", "blocked", "done"];
 const lineStyles: LineStyle[] = ["smoothstep", "straight", "step"];
-// Edge modes — the lightweight successor to the deleted `event`/`queue` shapes.
-//   sync   = direct call (default; what 99% of edges are)
-//   async  = caller doesn't wait — buffer/queue between source and target
-//   event  = source publishes; target is one of N subscribers
-const edgeModes: EdgeMode[] = ["sync", "async", "event"];
 
 export default function InspectorPanel({
   selectedNode,
@@ -94,54 +89,6 @@ export default function InspectorPanel({
             <input
               value={selectedEdge.data?.relation ?? ""}
               onChange={(event) => onEdgeFieldChange("relation", event.target.value)}
-            />
-          </label>
-          {/*
-            The four fields below were added when 16 shapes collapsed to 9.
-            They turn an edge from a pure visual link into a structured
-            cross-module contract that the build LLM can read directly:
-              dataShape  — the typed payload that flows source→target
-              mode       — sync (default) | async | event (replaces event/queue shapes)
-              condition  — branching predicate (replaces decision shape)
-              iteration  — flow-control hint (loop, fan-out, etc)
-            All four are optional. Empty strings are fine; the LLM treats
-            them as "no extra constraint".
-          */}
-          <label>
-            <span>전달되는 데이터 모양</span>
-            <input
-              value={selectedEdge.data?.dataShape ?? ""}
-              onChange={(event) => onEdgeFieldChange("dataShape", event.target.value)}
-              placeholder="예: { threadId: string, text: string }"
-            />
-          </label>
-          <label>
-            <span>호출 모드</span>
-            <select
-              value={selectedEdge.data?.mode ?? "sync"}
-              onChange={(event) => onEdgeFieldChange("mode", event.target.value)}
-            >
-              {edgeModes.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>조건 (분기)</span>
-            <input
-              value={selectedEdge.data?.condition ?? ""}
-              onChange={(event) => onEdgeFieldChange("condition", event.target.value)}
-              placeholder="예: 인증된 사용자일 때만"
-            />
-          </label>
-          <label>
-            <span>반복 / 흐름 제어</span>
-            <input
-              value={selectedEdge.data?.iteration ?? ""}
-              onChange={(event) => onEdgeFieldChange("iteration", event.target.value)}
-              placeholder="예: 큐가 빌 때까지 반복, 1:N fan-out"
             />
           </label>
           <label>

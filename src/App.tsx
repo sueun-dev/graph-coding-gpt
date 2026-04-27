@@ -411,19 +411,11 @@ export default function App() {
           return edge;
         }
 
-        // Spread `edge.data` first so the new edge metadata fields
-        // (dataShape/mode/condition/iteration) are preserved when the user
-        // edits any single field. Without this spread, editing `relation`
-        // would wipe `dataShape` etc. back to undefined.
         const data = {
           relation: edge.data?.relation ?? "",
           notes: edge.data?.notes ?? "",
           lineStyle: edge.data?.lineStyle ?? "smoothstep",
           animated: edge.data?.animated ?? false,
-          dataShape: edge.data?.dataShape ?? "",
-          mode: edge.data?.mode ?? "sync",
-          condition: edge.data?.condition ?? "",
-          iteration: edge.data?.iteration ?? "",
           [field]: value,
         };
 
