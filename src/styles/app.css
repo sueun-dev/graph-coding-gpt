@@ -103,10 +103,12 @@ button {
   overflow: hidden;
 }
 
-/* Welcome state: no workspace loaded, auxiliary bar hidden — widen main. */
-.workbench.is-welcome {
-  grid-template-columns: 300px minmax(0, 1fr);
-}
+/* Welcome / no-aux states: aux bar isn't rendered, but the basic 3-col grid
+   gives main-column the middle 1fr automatically. We previously had a
+   `.workbench.is-welcome` override that hardcoded `300px minmax(0, 1fr)`,
+   but at viewports <=980px (where explorer is also `display:none`) it
+   collapsed main-column into the explorer slot — welcome card had no
+   horizontal room. Removing the override lets the cascade just work. */
 
 .explorer-panel,
 .auxiliary-bar {
@@ -376,6 +378,12 @@ button {
 }
 
 .editor-surface {
+  /* main-column is `grid-template-rows: auto minmax(0, 1fr) auto` (tabs /
+     surface / bottom-panel). On welcome, tabs+bottom are not rendered, so
+     auto-placement put editor-surface in row 1 (auto = ~35px) and the
+     welcome card got vertically squashed. Explicit `grid-row: 2 / 3` pins
+     it to the 1fr slot regardless of how many siblings exist. */
+  grid-row: 2 / 3;
   min-height: 0;
   overflow: auto;
   background: var(--editor);
@@ -1806,7 +1814,7 @@ button {
 
 @media (max-width: 1380px) {
   .workbench {
-    grid-template-columns: 48px 260px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr);
   }
 
   .auxiliary-bar {
@@ -1816,7 +1824,8 @@ button {
 
 @media (max-width: 980px) {
   .workbench {
-    grid-template-columns: 48px minmax(0, 1fr);
+    /* Explorer panel below also hides — drop its column entirely. */
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .explorer-panel {
