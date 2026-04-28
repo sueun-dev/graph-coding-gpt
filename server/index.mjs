@@ -104,6 +104,27 @@ const TEXT_EXTENSIONS = new Set([
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
+app.use((err, _req, res, next) => {
+  if (!err) {
+    next();
+    return;
+  }
+  if (err.type === "entity.parse.failed") {
+    res.status(400).json({ ok: false, error: "Invalid JSON body." });
+    return;
+  }
+  if (err.type === "entity.too.large") {
+    res.status(413).json({ ok: false, error: "Request body is too large (max 5 MB)." });
+    return;
+  }
+  if (err.type === "encoding.unsupported") {
+    res.status(415).json({ ok: false, error: "Unsupported content encoding." });
+    return;
+  }
+  console.error("[express error]", err);
+  res.status(500).json({ ok: false, error: "Internal server error." });
+});
+
 const SPEC_SCHEMA = {
   type: "object",
   additionalProperties: false,
