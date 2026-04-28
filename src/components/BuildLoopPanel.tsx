@@ -39,8 +39,8 @@ export default function BuildLoopPanel({
     <section className="build-loop-panel panel-surface">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">BUILD LOOP</p>
-          <h2>Node-by-node build</h2>
+          <p className="eyebrow">STEP 3</p>
+          <h2>Build App</h2>
         </div>
         <span className={`runtime-status ${running ? "warn" : canRun ? "ok" : ""}`}>
           {running ? "Running" : canRun ? "Ready" : "Blocked"}
@@ -49,7 +49,7 @@ export default function BuildLoopPanel({
 
       <div className="runtime-card">
         <p>
-          확정된 다이어그램을 topological 순서로 한 노드씩 돌면서 <strong>구현 + 테스트 작성 + 실행</strong> 합니다. 실패하면 자동으로 최대 3회까지 수정 재시도.
+          확정된 다이어그램을 순서대로 한 노드씩 돌면서 <strong>구현 + 테스트 작성 + 실행</strong> 합니다. 실패하면 자동으로 최대 3회까지 수정 재시도.
         </p>
         {!canRun ? <p className="result-warning">{blockedReason}</p> : null}
         <div className="button-row">

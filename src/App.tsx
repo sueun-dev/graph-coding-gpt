@@ -1338,13 +1338,13 @@ export default function App() {
         <aside className="auxiliary-bar">
           <div className="auxiliary-tabs">
             <button className={activeAuxPanel === "ai" ? "is-active" : ""} onClick={() => setActiveAuxPanel("ai")}>
-              AI
+              1. GENERATE
             </button>
             <button className={activeAuxPanel === "inspector" ? "is-active" : ""} onClick={() => setActiveAuxPanel("inspector")}>
-              INSPECTOR
+              2. EDIT
             </button>
             <button className={activeAuxPanel === "build" ? "is-active" : ""} onClick={() => setActiveAuxPanel("build")}>
-              BUILD
+              3. BUILD
             </button>
           </div>
 

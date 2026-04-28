@@ -44,8 +44,8 @@ export default function RunPanel({
     <section className="run-panel panel-surface">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">AI CONTROL</p>
-          <h2>Codex Runtime</h2>
+          <p className="eyebrow">STEP 1</p>
+          <h2>Generate Diagram</h2>
         </div>
         <span className={`runtime-status ${auth?.codexAuthenticated ? "ok" : "warn"}`}>
           {auth?.codexAuthenticated ? "Codex Ready" : "Auth Check Needed"}
@@ -83,7 +83,7 @@ export default function RunPanel({
           <ol className="runtime-flowlist">
             <li><strong>캔버스</strong>에 한 문장 brief를 적고 <em>Generate Diagram</em>을 누르세요.</li>
             <li>생성된 노드/관계선을 <strong>캔버스</strong>에서 직접 편집합니다.</li>
-            <li>상단 <strong>BUILD</strong> 탭 → <em>Start Build Loop</em>으로 코드 + 테스트를 실행합니다.</li>
+            <li>오른쪽 <strong>3. BUILD</strong> 탭 → <em>Start Build Loop</em>으로 코드 + 테스트를 실행합니다.</li>
           </ol>
         </div>
       )}
@@ -166,7 +166,7 @@ export default function RunPanel({
         <div className="runtime-card runtime-card--cta">
           <h3>2. 다음 단계</h3>
           <p>
-            노드를 다 편집했으면 우측 상단 <strong>BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 노드 단위로 코드 + 테스트를 실제로 작성합니다.
+            노드를 다 편집했으면 오른쪽 <strong>3. BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 노드 단위로 코드 + 테스트를 실제로 작성합니다.
           </p>
         </div>
       ) : null}
