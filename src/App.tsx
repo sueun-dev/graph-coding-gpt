@@ -11,7 +11,6 @@ import {
   useReactFlow,
   type Connection,
 } from "@xyflow/react";
-import BottomPanel from "./components/BottomPanel";
 import BuildLoopPanel from "./components/BuildLoopPanel";
 import DiagramEmptyState from "./components/DiagramEmptyState";
 import DiagramNodeRenderer from "./components/DiagramNode";
@@ -88,7 +87,6 @@ type WorkspaceMode = "none" | "directory" | "imported" | "native";
 
 const baseTabs: EditorTab[] = [
   { id: "diagram", label: "diagram.canvas", kind: "diagram", closeable: false },
-  { id: "graph", label: "diagram.graph.json", kind: "graph", closeable: false },
 ];
 
 export default function App() {
@@ -1132,13 +1130,9 @@ export default function App() {
       );
     }
 
-    if (activeEditor === "graph") {
-      return renderTextDocument("diagram.graph.json", JSON.stringify(diagram, null, 2), `${diagram.nodes.length} nodes`);
-    }
-
     if (activeEditor === "spec") {
       if (!result) {
-        return renderTextDocument("specification.md", "No generated specification yet.\n\nRun Codex from the AI panel to generate one.");
+        return renderTextDocument("specification.md", "No generated specification yet.\n\nUse 1. GENERATE to create one.");
       }
 
       return renderTextDocument(
@@ -1329,9 +1323,6 @@ export default function App() {
 
           <div className="editor-surface">{renderActiveEditor()}</div>
 
-          {workspaceFiles.length > 0 ? (
-            <BottomPanel diagram={diagram} result={result} error={error} loading={loading} />
-          ) : null}
         </section>
 
         {workspaceFiles.length > 0 ? (

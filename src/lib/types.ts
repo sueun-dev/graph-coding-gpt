@@ -238,12 +238,6 @@ export type EditorTab =
       closeable: false;
     }
   | {
-      id: "graph";
-      label: string;
-      kind: "graph";
-      closeable: false;
-    }
-  | {
       id: "harness";
       label: string;
       kind: "harness";

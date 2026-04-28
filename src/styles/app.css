@@ -136,8 +136,7 @@ button {
 .workspace-actions,
 .button-row,
 .runtime-meta,
-.auxiliary-tabs,
-.bottom-tabs {
+.auxiliary-tabs {
   display: flex;
   align-items: center;
 }
@@ -323,15 +322,11 @@ button {
 
 .main-column {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: var(--editor);
   overflow: hidden;
-}
-
-.bottom-panel {
-  height: 290px;
 }
 
 .editor-tabs {
@@ -378,11 +373,8 @@ button {
 }
 
 .editor-surface {
-  /* main-column is `grid-template-rows: auto minmax(0, 1fr) auto` (tabs /
-     surface / bottom-panel). On welcome, tabs+bottom are not rendered, so
-     auto-placement put editor-surface in row 1 (auto = ~35px) and the
-     welcome card got vertically squashed. Explicit `grid-row: 2 / 3` pins
-     it to the 1fr slot regardless of how many siblings exist. */
+  /* Welcome mode has no editor tabs, so auto-placement can put the surface in
+     the small tab row. Pin it to the 1fr row so the welcome card has room. */
   grid-row: 2 / 3;
   min-height: 0;
   overflow: auto;
@@ -620,8 +612,7 @@ button {
   color: #ffffff;
 }
 
-.editor-code,
-.panel-code {
+.editor-code {
   height: 100%;
   margin: 0 12px 12px;
   padding: 14px 16px;
@@ -647,8 +638,7 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
-.auxiliary-tabs button,
-.bottom-tabs button {
+.auxiliary-tabs button {
   height: 100%;
   padding: 0 12px;
   border: 0;
@@ -657,8 +647,7 @@ button {
   font-size: 12px;
 }
 
-.auxiliary-tabs button.is-active,
-.bottom-tabs button.is-active {
+.auxiliary-tabs button.is-active {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.05);
 }
@@ -941,64 +930,6 @@ button {
 .checkbox-row input {
   width: 16px;
   height: 16px;
-}
-
-.bottom-panel {
-  display: grid;
-  grid-template-rows: 36px minmax(0, 1fr);
-  min-height: 0;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.bottom-tabs {
-  gap: 0;
-  border-bottom: 1px solid var(--border);
-  background: #252526;
-}
-
-.bottom-body {
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.panel-message {
-  margin: 0;
-  padding: 16px;
-  font-size: 12px;
-  color: #c5c5c5;
-}
-
-.panel-error {
-  color: #f48771;
-}
-
-.spec-layout {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-}
-
-.spec-card {
-  padding: 12px;
-  border: 1px solid var(--border);
-  background: #252526;
-  font-size: 12px;
-}
-
-.spec-card h3 {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #ffffff;
-}
-
-.spec-card ul,
-.spec-card ol {
-  margin: 0;
-  padding-left: 18px;
-  color: #cfcfcf;
 }
 
 .status-bar {
@@ -1593,11 +1524,9 @@ button {
 .auxiliary-body,
 .panel-surface,
 .inspector,
-.bottom-body,
 .welcome-screen,
 .setup-body,
-.editor-code,
-.panel-code {
+.editor-code {
   scrollbar-width: thin;
   scrollbar-color: #4c4c4c #252526;
 }
@@ -1607,11 +1536,9 @@ button {
 .auxiliary-body::-webkit-scrollbar,
 .panel-surface::-webkit-scrollbar,
 .inspector::-webkit-scrollbar,
-.bottom-body::-webkit-scrollbar,
 .welcome-screen::-webkit-scrollbar,
 .setup-body::-webkit-scrollbar,
-.editor-code::-webkit-scrollbar,
-.panel-code::-webkit-scrollbar {
+.editor-code::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
@@ -1621,11 +1548,9 @@ button {
 .auxiliary-body::-webkit-scrollbar-thumb,
 .panel-surface::-webkit-scrollbar-thumb,
 .inspector::-webkit-scrollbar-thumb,
-.bottom-body::-webkit-scrollbar-thumb,
 .welcome-screen::-webkit-scrollbar-thumb,
 .setup-body::-webkit-scrollbar-thumb,
-.editor-code::-webkit-scrollbar-thumb,
-.panel-code::-webkit-scrollbar-thumb {
+.editor-code::-webkit-scrollbar-thumb {
   background: #4c4c4c;
   border: 2px solid #252526;
 }
@@ -1804,11 +1729,9 @@ button {
 .auxiliary-body::-webkit-scrollbar-track,
 .panel-surface::-webkit-scrollbar-track,
 .inspector::-webkit-scrollbar-track,
-.bottom-body::-webkit-scrollbar-track,
 .welcome-screen::-webkit-scrollbar-track,
 .setup-body::-webkit-scrollbar-track,
-.editor-code::-webkit-scrollbar-track,
-.panel-code::-webkit-scrollbar-track {
+.editor-code::-webkit-scrollbar-track {
   background: #252526;
 }
 
