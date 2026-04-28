@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import os from "os";
 import { promises as fs } from "fs";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
@@ -13,6 +14,65 @@ const ROOT = process.cwd();
 const GENERATED_DIR = path.join(ROOT, "generated");
 const TMP_DIR = path.join(ROOT, ".tmp");
 const DIST_DIR = path.join(ROOT, "dist");
+const CODEX_MODEL = process.env.GRAPHCODING_CODEX_MODEL?.trim() || "gpt-5.4";
+const CODEX_MODEL_LABEL = CODEX_MODEL;
+const CODEX_REASONING_EFFORT = process.env.GRAPHCODING_CODEX_REASONING_EFFORT?.trim() || "medium";
+const FOLDER_DIALOG_TIMEOUT_MS = Number(process.env.GRAPHCODING_FOLDER_DIALOG_TIMEOUT_MS) || 30000;
+const WORKSPACE_SKIP_DIRS = new Set([
+  ".git",
+  ".claude",
+  ".tmp",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "dist",
+  "generated",
+  "node_modules",
+]);
+const ISOLATION_SCAN_SKIP_DIRS = new Set([
+  ".git",
+  ".graphcoding",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "dist",
+  "generated",
+  "node_modules",
+]);
+const TEXT_ISOLATION_SKIP_DIRS = new Set([
+  ...ISOLATION_SCAN_SKIP_DIRS,
+  ".graphcoding",
+  "node_modules",
+]);
+const HOST_PATH_PATTERN = /(?:~\/|\/Users\/|\/Volumes\/|\/private\/|\/tmp\/|\/var\/folders\/)[^\s"'`),}\]]*/g;
+const MAX_ISOLATION_ISSUES = 40;
+
+const workspaceRuntimeEnv = (cwd) => {
+  const cacheRoot = path.join(cwd, ".graphcoding", "cache");
+  return {
+    ...process.env,
+    COREPACK_HOME: path.join(cacheRoot, "corepack"),
+    PNPM_HOME: path.join(cacheRoot, "pnpm-home"),
+    XDG_CACHE_HOME: path.join(cacheRoot, "xdg"),
+    npm_config_cache: path.join(cacheRoot, "npm"),
+    NPM_CONFIG_CACHE: path.join(cacheRoot, "npm"),
+    PATH: [path.join(cacheRoot, "pnpm-home"), process.env.PATH].filter(Boolean).join(path.delimiter),
+  };
+};
+
+const ensureWorkspaceRuntimeDirs = async (cwd) => {
+  const cacheRoot = path.join(cwd, ".graphcoding", "cache");
+  await Promise.all([
+    fs.mkdir(path.join(cacheRoot, "corepack"), { recursive: true }),
+    fs.mkdir(path.join(cacheRoot, "pnpm-home"), { recursive: true }),
+    fs.mkdir(path.join(cacheRoot, "xdg"), { recursive: true }),
+    fs.mkdir(path.join(cacheRoot, "npm"), { recursive: true }),
+  ]);
+};
 const TEXT_EXTENSIONS = new Set([
   "ts",
   "tsx",
@@ -193,6 +253,9 @@ const guessMimeType = (filePath) => {
   }
 };
 
+const codexModelArgs = () => ["-m", CODEX_MODEL];
+const codexConfigArgs = () => ["-c", `model_reasoning_effort="${CODEX_REASONING_EFFORT}"`];
+
 const ensureWithinRoot = (rootPath, relativePath) => {
   const resolvedRoot = path.resolve(rootPath);
   const resolvedFile = path.resolve(rootPath, relativePath);
@@ -205,6 +268,241 @@ const ensureWithinRoot = (rootPath, relativePath) => {
   return resolvedFile;
 };
 
+const isPathInside = (rootPath, candidatePath) => {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+};
+
+const assertPathInsideRealRoot = async (rootPath, candidatePath, label = "path") => {
+  const realRoot = await fs.realpath(rootPath);
+  const realCandidate = await fs.realpath(candidatePath);
+  if (!isPathInside(realRoot, realCandidate)) {
+    throw new Error(`${label} escapes workspace root: ${realCandidate}`);
+  }
+  return realCandidate;
+};
+
+const ensureWritablePathWithinRoot = async (rootPath, relativePath) => {
+  const destination = ensureWithinRoot(rootPath, relativePath);
+  const realRoot = await fs.realpath(rootPath);
+  const parts = path.relative(path.resolve(rootPath), path.dirname(destination))
+    .split(path.sep)
+    .filter(Boolean);
+
+  let current = path.resolve(rootPath);
+  for (const part of parts) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      await fs.mkdir(current);
+      stat = await fs.lstat(current);
+    }
+
+    if (!stat.isDirectory() && !stat.isSymbolicLink()) {
+      throw new Error(`Workspace path parent is not a directory: ${path.relative(rootPath, current)}`);
+    }
+
+    const realCurrent = await fs.realpath(current);
+    if (!isPathInside(realRoot, realCurrent)) {
+      throw new Error(`Workspace path parent escapes root: ${realCurrent}`);
+    }
+  }
+
+  try {
+    const existing = await fs.lstat(destination);
+    if (existing.isSymbolicLink()) {
+      await assertPathInsideRealRoot(rootPath, destination, `Workspace file symlink ${relativePath}`);
+    }
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+
+  return destination;
+};
+
+const normalizeHostPathReference = (rawPath) => {
+  const trimmed = rawPath.replace(/[.;:,]+$/, "");
+  if (trimmed.startsWith("~/")) {
+    return path.join(os.homedir(), trimmed.slice(2));
+  }
+  return trimmed;
+};
+
+const detectPackageManagerName = async (cwd) => {
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+    const declared = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : "";
+    if (declared) return declared;
+  } catch {
+    // Empty workspaces are valid before the first node bootstraps package.json.
+  }
+  if (await fs.access(path.join(cwd, "pnpm-lock.yaml")).then(() => true).catch(() => false)) return "pnpm";
+  if (await fs.access(path.join(cwd, "yarn.lock")).then(() => true).catch(() => false)) return "yarn";
+  if (await fs.access(path.join(cwd, "package-lock.json")).then(() => true).catch(() => false)) return "npm";
+  return "";
+};
+
+const walkWorkspaceForIsolation = async (cwd, onEntry, prefix = []) => {
+  const currentDirectory = path.join(cwd, ...prefix);
+  let entries;
+  try {
+    entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code !== "ENOENT" && err?.code !== "EACCES") {
+      throw err;
+    }
+    return;
+  }
+
+  for (const entry of entries) {
+    const nextPrefix = [...prefix, entry.name];
+    const rel = nextPrefix.join("/");
+    const absolutePath = path.join(cwd, ...nextPrefix);
+    const lstat = await fs.lstat(absolutePath);
+    await onEntry({ entry, lstat, absolutePath, rel, prefix: nextPrefix });
+
+    if (lstat.isDirectory() && !ISOLATION_SCAN_SKIP_DIRS.has(entry.name)) {
+      await walkWorkspaceForIsolation(cwd, onEntry, nextPrefix);
+    }
+  }
+};
+
+const validateExternalSymlinks = async (cwd, issues) => {
+  await walkWorkspaceForIsolation(cwd, async ({ lstat, absolutePath, rel }) => {
+    if (issues.length >= MAX_ISOLATION_ISSUES || !lstat.isSymbolicLink()) return;
+
+    await validateSymlinkInsideWorkspace(cwd, absolutePath, rel, issues);
+  });
+};
+
+const validateSymlinkInsideWorkspace = async (cwd, absolutePath, rel, issues) => {
+  if (issues.length >= MAX_ISOLATION_ISSUES) return;
+  let resolvedTarget;
+  try {
+    resolvedTarget = await fs.realpath(absolutePath);
+  } catch {
+    const rawTarget = await fs.readlink(absolutePath);
+    resolvedTarget = path.resolve(path.dirname(absolutePath), rawTarget);
+  }
+
+  if (!isPathInside(cwd, resolvedTarget)) {
+    issues.push({
+      type: "external-symlink",
+      path: rel,
+      detail: `symlink resolves outside workspace: ${resolvedTarget}`,
+    });
+  }
+};
+
+const validateNodeModulesPackageEntries = async (cwd, issues) => {
+  if (issues.length >= MAX_ISOLATION_ISSUES) return;
+  const packageManager = await detectPackageManagerName(cwd);
+  const expectsPnpmLinks = packageManager === "pnpm";
+
+  const modulesRoot = path.join(cwd, "node_modules");
+  const exists = await fs.access(modulesRoot).then(() => true).catch(() => false);
+  if (!exists) return;
+
+  const checkPackageEntry = async (absolutePath, rel) => {
+    if (issues.length >= MAX_ISOLATION_ISSUES) return;
+    const lstat = await fs.lstat(absolutePath);
+    if (lstat.isSymbolicLink()) {
+      await validateSymlinkInsideWorkspace(cwd, absolutePath, rel, issues);
+      return;
+    }
+    if (expectsPnpmLinks && lstat.isDirectory()) {
+      issues.push({
+        type: "pnpm-node-modules-layout",
+        path: rel,
+        detail: "pnpm package entry is a real directory; expected a workspace-local symlink managed by pnpm",
+      });
+    }
+  };
+
+  const entries = await fs.readdir(modulesRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (issues.length >= MAX_ISOLATION_ISSUES) break;
+    const absolutePath = path.join(modulesRoot, entry.name);
+    if (entry.name.startsWith(".")) {
+      const lstat = await fs.lstat(absolutePath);
+      if (lstat.isSymbolicLink()) {
+        await validateSymlinkInsideWorkspace(cwd, absolutePath, `node_modules/${entry.name}`, issues);
+      }
+      continue;
+    }
+    if (entry.name.startsWith("@") && entry.isDirectory()) {
+      const scopedEntries = await fs.readdir(absolutePath, { withFileTypes: true }).catch(() => []);
+      for (const scopedEntry of scopedEntries) {
+        await checkPackageEntry(
+          path.join(absolutePath, scopedEntry.name),
+          `node_modules/${entry.name}/${scopedEntry.name}`,
+        );
+      }
+      continue;
+    }
+    await checkPackageEntry(absolutePath, `node_modules/${entry.name}`);
+  }
+};
+
+const validateExternalPathReferences = async (cwd, issues) => {
+  await walkWorkspaceForIsolation(cwd, async ({ entry, lstat, absolutePath, rel, prefix }) => {
+    if (issues.length >= MAX_ISOLATION_ISSUES || !lstat.isFile()) return;
+    if (prefix.some((part) => TEXT_ISOLATION_SKIP_DIRS.has(part))) return;
+    if (!isTextLikePath(rel)) return;
+
+    const text = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    const matches = text.matchAll(HOST_PATH_PATTERN);
+    for (const match of matches) {
+      const normalized = normalizeHostPathReference(match[0]);
+      if (!path.isAbsolute(normalized)) continue;
+      if (isPathInside(cwd, normalized)) continue;
+      issues.push({
+        type: "external-path-reference",
+        path: rel,
+        detail: `contains outside filesystem path: ${match[0]}`,
+      });
+      if (issues.length >= MAX_ISOLATION_ISSUES) return;
+    }
+  });
+};
+
+const validateWorkspaceIsolation = async (cwd) => {
+  const issues = [];
+  await validateExternalSymlinks(cwd, issues);
+  await validateNodeModulesPackageEntries(cwd, issues);
+  await validateExternalPathReferences(cwd, issues);
+  return {
+    passed: issues.length === 0,
+    issues,
+  };
+};
+
+const isolationFailureResult = (validation) => {
+  const details = validation.issues
+    .slice(0, MAX_ISOLATION_ISSUES)
+    .map((issue) => `- [${issue.type}] ${issue.path}: ${issue.detail}`)
+    .join("\n");
+  const message = [
+    "Workspace isolation failed.",
+    "Generated code must not depend on sibling projects, host absolute paths, or hand-written node_modules entries.",
+    details,
+  ].filter(Boolean).join("\n");
+
+  return {
+    passed: false,
+    failures: [message],
+    stdout: "",
+    stderr: message,
+    isolation: validation,
+  };
+};
+
+const isWorkspacePathError = (error) =>
+  /escapes workspace root|escapes root|Workspace path parent/.test(String(error?.message || error));
+
 const readWorkspaceListing = async (rootPath) => {
   const files = [];
 
@@ -213,18 +511,40 @@ const readWorkspaceListing = async (rootPath) => {
     entries.sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
 
     for (const entry of entries) {
+      if (WORKSPACE_SKIP_DIRS.has(entry.name)) {
+        continue;
+      }
+
       const absolutePath = path.join(currentDirectory, entry.name);
       const relativePath = [...prefix, entry.name].join("/");
+
+      const lstat = await fs.lstat(absolutePath);
+      if (lstat.isSymbolicLink()) {
+        try {
+          await assertPathInsideRealRoot(rootPath, absolutePath, `Workspace symlink ${relativePath}`);
+        } catch {
+          continue;
+        }
+        const stat = await fs.stat(absolutePath);
+        if (stat.isDirectory()) {
+          continue;
+        }
+        files.push({
+          path: relativePath,
+          size: stat.size,
+          type: guessMimeType(relativePath),
+        });
+        continue;
+      }
 
       if (entry.isDirectory()) {
         await visit(absolutePath, [...prefix, entry.name]);
         continue;
       }
 
-      const stat = await fs.stat(absolutePath);
       files.push({
         path: relativePath,
-        size: stat.size,
+        size: lstat.size,
         type: guessMimeType(relativePath),
       });
     }
@@ -242,7 +562,10 @@ const readWorkspaceListing = async (rootPath) => {
 const chooseFolderViaDialog = () => {
   if (process.platform === "darwin") {
     const script = 'POSIX path of (choose folder with prompt "Open Folder")';
-    const result = spawnSync("osascript", ["-e", script], { encoding: "utf8" });
+    const result = spawnSync("osascript", ["-e", script], { encoding: "utf8", timeout: FOLDER_DIALOG_TIMEOUT_MS });
+    if (result.error?.code === "ETIMEDOUT" || result.signal) {
+      throw new Error("Folder selection timed out.");
+    }
     if (result.status !== 0) {
       const detail = `${result.stderr || ""}${result.stdout || ""}`.trim() || "Folder selection was cancelled.";
       throw new Error(detail);
@@ -259,7 +582,10 @@ const chooseFolderViaDialog = () => {
       "if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }",
       "Write-Output $dialog.SelectedPath",
     ].join("; ");
-    const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" });
+    const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", timeout: FOLDER_DIALOG_TIMEOUT_MS });
+    if (result.error?.code === "ETIMEDOUT" || result.signal) {
+      throw new Error("Folder selection timed out.");
+    }
     if (result.status !== 0) {
       const detail = `${result.stderr || ""}${result.stdout || ""}`.trim() || "Folder selection was cancelled.";
       throw new Error(detail);
@@ -268,7 +594,10 @@ const chooseFolderViaDialog = () => {
     return result.stdout.trim();
   }
 
-  const result = spawnSync("zenity", ["--file-selection", "--directory", "--title=Open Folder"], { encoding: "utf8" });
+  const result = spawnSync("zenity", ["--file-selection", "--directory", "--title=Open Folder"], { encoding: "utf8", timeout: FOLDER_DIALOG_TIMEOUT_MS });
+  if (result.error?.code === "ETIMEDOUT" || result.signal) {
+    throw new Error("Folder selection timed out.");
+  }
   if (result.status !== 0) {
     const detail = `${result.stderr || ""}${result.stdout || ""}`.trim() || "Folder selection was cancelled.";
     throw new Error(detail);
@@ -298,6 +627,8 @@ const codexStatus = (opts) => {
       codexInstalled: false,
       codexAuthenticated: false,
       detail: check.error.message,
+      model: CODEX_MODEL_LABEL,
+      reasoningEffort: CODEX_REASONING_EFFORT,
     };
   } else {
     const detail = `${check.stdout}${check.stderr}`.trim();
@@ -305,6 +636,8 @@ const codexStatus = (opts) => {
       codexInstalled: true,
       codexAuthenticated: check.status === 0,
       detail: detail || "Unknown",
+      model: CODEX_MODEL_LABEL,
+      reasoningEffort: CODEX_REASONING_EFFORT,
     };
   }
   codexStatusCache = { value: result, expiresAt: now + CODEX_STATUS_TTL_MS };
@@ -1030,13 +1363,13 @@ const buildAgentDiagramFallback = (brief, harness, errorMessage = "") => {
       {
         key: "planner",
         shape: "service",
-        title: korean ? "GPT-5.5 diagram planner" : "GPT-5.5 Diagram Planner",
+        title: korean ? "Codex diagram planner" : "Codex Diagram Planner",
         actor: korean ? "AI" : "AI",
         intent: korean ? "러프 텍스트를 첫 기본 diagram으로 바꾼다" : "Turn the rough brief into the first diagram",
         behavior: korean ? "도메인, 화면, 서비스, 저장소, 외부 연동을 추론해 노드와 선을 만든다" : "Infer screens, services, persistence, and integrations",
         inputs: korean ? "brief, harness, 현재 diagram" : "brief, harness, and current diagram",
         outputs: korean ? "기본 diagram blueprint" : "diagram blueprint",
-        notes: "gpt-5.5",
+        notes: CODEX_MODEL_LABEL,
         testHint: korean ? "짧은 brief에도 도메인 고유 명사가 살아 있는지 본다" : "Verify domain-specific nouns survive short prompts",
         status: "planned",
       },
@@ -1362,6 +1695,10 @@ nodes for it. Common omissions to scan for (any of these missing → fix it):
     localStorage, Tauri IPC, sqlite via node, etc).
   □ package.json scripts wiring (dev / build / start / test). One node should
     own these or another node's behavior should explicitly create them.
+  □ Visible controls for every user-owned process. If the graph has an add,
+    edit, delete, toggle, submit, export, or import process, there must be an
+    input/screen node that exposes that action in the running UI. A process
+    without a reachable control is not shippable.
   □ One smoke / integration test node that actually mounts/boots the system
     and asserts a single happy path round-trip (e.g. "mount → click →
     storage write → reload → state restored"). Unit tests on individual
@@ -1635,8 +1972,8 @@ const runCodexStructuredOutput = async ({ prompt, schema, name, timeoutMs = 6000
 
   const args = [
     "exec",
-    "-m",
-    "gpt-5.5",
+    ...codexModelArgs(),
+    ...codexConfigArgs(),
     "--skip-git-repo-check",
     "--sandbox",
     "read-only",
@@ -1742,6 +2079,23 @@ const SHAPE_PRIORITY = {
   startEnd: 8,   // L8: entry point — mount, hydrate, wire everything
 };
 
+const dependencyEdgeText = (edge) => [
+  edge?.relation,
+  edge?.label,
+  edge?.data?.relation,
+  edge?.data?.label,
+  edge?.data?.notes,
+]
+  .filter(Boolean)
+  .join(" ")
+  .toLowerCase();
+
+const isDependencyEdge = (edge) => {
+  const text = dependencyEdgeText(edge);
+  return /\b(uses?|imports?|depends?|implements?|calls?|creates?|updates?|validates?|wraps?)\b/.test(text)
+    || /(사용|가져|의존|구현|호출|생성|업데이트|갱신|검증|감싸|래핑)/.test(text);
+};
+
 const deriveBuildOrder = (diagram) => {
   // Only `note` is skipped now — the old `group` shape was legacy-migrated
   // into `note` before reaching this code.
@@ -1749,9 +2103,11 @@ const deriveBuildOrder = (diagram) => {
   const runtimeNodes = (diagram?.nodes || []).filter((n) => !skip.has(n.shape));
   const priorityOf = (n) => SHAPE_PRIORITY[n.shape] ?? 50;
 
-  // Sort by (shape priority, x position, original index). Deterministic and
-  // independent of the edge directions the LLM happened to draw.
-  const ordered = runtimeNodes
+  // Base order is still deterministic by layer, but dependency-like edges can
+  // refine same-layer and cross-layer ties. In generated diagrams, labels such
+  // as "uses", "implements", and "calls" mean source depends on target, so the
+  // target must be built first.
+  const baseOrdered = runtimeNodes
     .map((n, i) => ({ n, i }))
     .sort((a, b) => {
       const pa = priorityOf(a.n);
@@ -1763,14 +2119,40 @@ const deriveBuildOrder = (diagram) => {
       return a.i - b.i;
     })
     .map(({ n }) => n.id);
+  const baseRank = new Map(baseOrdered.map((id, index) => [id, index]));
+  const runtimeIds = new Set(runtimeNodes.map((n) => n.id));
+  const outgoing = new Map(baseOrdered.map((id) => [id, new Set()]));
+  const indegree = new Map(baseOrdered.map((id) => [id, 0]));
+
+  for (const edge of diagram?.edges || []) {
+    if (!runtimeIds.has(edge.source) || !runtimeIds.has(edge.target)) continue;
+    if (edge.source === edge.target || !isDependencyEdge(edge)) continue;
+    const before = edge.target;
+    const after = edge.source;
+    const next = outgoing.get(before);
+    if (!next || next.has(after)) continue;
+    next.add(after);
+    indegree.set(after, (indegree.get(after) || 0) + 1);
+  }
+
+  const ready = baseOrdered.filter((id) => (indegree.get(id) || 0) === 0);
+  const ordered = [];
+  while (ready.length > 0) {
+    ready.sort((a, b) => (baseRank.get(a) || 0) - (baseRank.get(b) || 0));
+    const id = ready.shift();
+    ordered.push(id);
+    for (const child of outgoing.get(id) || []) {
+      indegree.set(child, (indegree.get(child) || 0) - 1);
+      if ((indegree.get(child) || 0) === 0) ready.push(child);
+    }
+  }
 
   // "cycles" here flags **back-edges** relative to shape priority: e.g., a screen
   // whose edge points at a database. That's legitimate in runtime (UI reads from DB,
   // DB pushes updates back), but it signals the diagram has feedback loops the user
   // should be aware of. Does not affect order.
-  const runtimeIds = new Set(runtimeNodes.map((n) => n.id));
   const nodeById = new Map(runtimeNodes.map((n) => [n.id, n]));
-  let cycles = false;
+  let cycles = ordered.length !== baseOrdered.length;
   for (const edge of diagram?.edges || []) {
     if (!runtimeIds.has(edge.source) || !runtimeIds.has(edge.target)) continue;
     if (edge.source === edge.target) continue;
@@ -1782,7 +2164,7 @@ const deriveBuildOrder = (diagram) => {
     }
   }
 
-  return { order: ordered, cycles };
+  return { order: cycles && ordered.length !== baseOrdered.length ? baseOrdered : ordered, cycles };
 };
 
 const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, isFirst }) => {
@@ -1803,7 +2185,7 @@ Bootstrap requirements (first node only):
 - Create vitest.config.ts with environment "jsdom" and include ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts", "src/**/*.test.tsx"].
 - Create the empty tests/ directory; every subsequent node adds its own subfolder.
 - If harness.stack.frontend uses Tailwind: create tailwind.config.ts and src/globals.css wiring the six palette vars and typography.
-- Run the package manager's install command once so node_modules is ready for later nodes' tests.
+- Run the package manager's install command once so node_modules is ready for later nodes' tests. Use the configured package manager, not npx.
 `.trim()
     : `
 The workspace is already scaffolded by prior nodes. Do NOT re-initialize package.json, tsconfig, or vitest config. Only add the files this node needs.`.trim();
@@ -1842,6 +2224,23 @@ Target node (implement exactly this, no more):
 
 ${bootstrapBlock}
 
+Workspace and dependency rules:
+- Stay inside the current workspace root. Do not read, search, symlink, or import
+  from sibling projects, ~/Documents, or any path outside this app.
+- The server validates this after every attempt. Any outside symlink, host
+  absolute path reference, or invalid pnpm node_modules entry fails the node.
+- Do not run broad filesystem scans such as \`find /Users\`, \`find ~/Documents\`,
+  or searches outside \`.\`. Use \`pwd\`, \`ls\`, \`cat package.json\`, and \`rg\` inside
+  \`.\` only.
+- Never manually create, edit, or commit files under node_modules. Never create
+  local shims for third-party packages. If a dependency is missing, install it
+  with the configured package manager and report a real failure if install fails.
+- For pnpm projects, prefer \`pnpm install\`, \`pnpm exec vitest run\`, and
+  \`pnpm exec tsc --noEmit\`. If local binaries exist, direct local commands such
+  as \`./node_modules/.bin/vitest run\` are OK.
+- Do not use \`npx\`, \`npm exec\`, or package commands that download ad-hoc tools
+  during verification.
+
 CONTEXT-DISCOVERY — DO THIS FIRST (required, before writing any code):
 1. Read package.json and tsconfig.json so you know the framework, test runner,
    and module setup.
@@ -1864,12 +2263,18 @@ Work rules for this node:
    Test BOTH the happy path AND at least one edge case.
 3. Run the whole workspace's vitest suite and make sure it is green before
    finishing. Do not finish on red.
-4. Run \`npx tsc --noEmit\` and make sure it is green before finishing.
+4. Run the local TypeScript checker (\`pnpm exec tsc --noEmit\` or
+   \`./node_modules/.bin/tsc --noEmit\`) and make sure it is green before finishing.
 5. Do NOT delete or edit files created by prior nodes unless the current node's
    behavior explicitly requires it. If you must edit a prior file, keep the
    change minimal and additive (export new symbols, do not change existing
    signatures).
-6. End with a terse summary: "Files added: ..." and "Files modified: ..."
+6. If this is a startEnd, screen, or app-host node, make the app actually
+   runnable from package.json scripts and a real runtime entry. For Next.js,
+   create/update src/app/page.tsx and src/app/layout.tsx plus dev/build/start
+   scripts. For Vite, create/update index.html plus a browser entry module.
+   Wire visible controls for the built user processes, not just read-only UI.
+7. End with a terse summary: "Files added: ..." and "Files modified: ..."
    Include any IMPORT mismatches you noticed in prior nodes (so the user
    can decide whether to refine the diagram).
 
@@ -1881,6 +2286,7 @@ Start now.
 
 const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 900000 }) => {
   await ensureRuntimeDirs();
+  await ensureWorkspaceRuntimeDirs(cwd);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const shortId = String(nodeId || "x").slice(0, 8);
   const promptPath = path.join(GENERATED_DIR, `node-${shortId}-attempt${attempt}-prompt-${stamp}.md`);
@@ -1889,19 +2295,21 @@ const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 90000
 
   const args = [
     "exec",
-    "-m",
-    "gpt-5.5",
+    ...codexModelArgs(),
+    ...codexConfigArgs(),
     "--skip-git-repo-check",
     "--sandbox",
     "workspace-write",
     "--ephemeral",
     "--color",
     "never",
+    "--cd",
+    cwd,
     "-",
   ];
 
   const output = await new Promise((resolve, reject) => {
-    const child = spawn("codex", args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    const child = spawn("codex", args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: workspaceRuntimeEnv(cwd) });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -1929,8 +2337,16 @@ const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 90000
 
 const detectTestRunner = async (cwd) => {
   const localVitest = path.join(cwd, "node_modules", ".bin", "vitest");
+  const localVitestMjs = path.join(cwd, "node_modules", "vitest", "vitest.mjs");
   const localJest = path.join(cwd, "node_modules", ".bin", "jest");
   const hasLocal = async (p) => fs.access(p).then(() => true).catch(() => false);
+  const missing = (name) => ({
+    cmd: process.execPath,
+    args: [
+      "-e",
+      `console.error(${JSON.stringify(`Local ${name} is missing. Install dependencies inside this workspace; do not use npx or external node_modules.`)}); process.exit(1);`,
+    ],
+  });
   try {
     const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
     const wantsVitest = /vitest/.test(pkg.scripts?.test || "") || pkg.devDependencies?.vitest || pkg.dependencies?.vitest;
@@ -1938,14 +2354,17 @@ const detectTestRunner = async (cwd) => {
     if (wantsVitest && await hasLocal(localVitest)) {
       return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
     }
+    if (wantsVitest && await hasLocal(localVitestMjs)) {
+      return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"] };
+    }
     if (wantsJest && await hasLocal(localJest)) {
       return { cmd: localJest, args: ["--color=false"] };
     }
     if (wantsVitest) {
-      return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
+      return missing("vitest");
     }
     if (wantsJest) {
-      return { cmd: "npx", args: ["--yes", "jest", "--color=false"] };
+      return missing("jest");
     }
   } catch (err) {
     console.warn(`[detectTestRunner] could not read ${cwd}/package.json: ${err?.message || err}`);
@@ -1953,7 +2372,10 @@ const detectTestRunner = async (cwd) => {
   if (await hasLocal(localVitest)) {
     return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
   }
-  return { cmd: "npx", args: ["--yes", "vitest", "run", "--reporter=verbose", "--no-color"] };
+  if (await hasLocal(localVitestMjs)) {
+    return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"] };
+  }
+  return missing("vitest");
 };
 
 const extractFailureLines = (text) => {
@@ -1976,9 +2398,10 @@ const extractFailureLines = (text) => {
 };
 
 const runNodeTests = async ({ cwd, timeoutMs = 300000 }) => {
+  await ensureWorkspaceRuntimeDirs(cwd);
   const { cmd, args } = await detectTestRunner(cwd);
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: workspaceRuntimeEnv(cwd) });
     let stdout = "";
     let stderr = "";
     let killed = false;
@@ -2086,6 +2509,7 @@ app.post("/api/workspace/read-file", async (req, res) => {
     }
 
     const absolutePath = ensureWithinRoot(rootPath, relativePath);
+    await assertPathInsideRealRoot(rootPath, absolutePath, `Workspace file ${relativePath}`);
     const content = await fs.readFile(absolutePath, "utf8");
     res.json({ ok: true, content });
   } catch (error) {
@@ -2109,14 +2533,36 @@ app.post("/api/workspace/write-artifacts", async (req, res) => {
         continue;
       }
 
-      const destination = ensureWithinRoot(rootPath, artifact.path);
-      await fs.mkdir(path.dirname(destination), { recursive: true });
+      const destination = await ensureWritablePathWithinRoot(rootPath, artifact.path);
       await fs.writeFile(destination, artifact.content);
     }
 
     res.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to write artifacts.";
+    res.status(400).json({ ok: false, error: message });
+  }
+});
+
+app.post("/api/workspace/validate-isolation", async (req, res) => {
+  try {
+    const rootPath = typeof req.body?.rootPath === "string" ? req.body.rootPath : "";
+    if (!rootPath) {
+      res.status(400).json({ ok: false, error: "rootPath is required." });
+      return;
+    }
+
+    const resolvedRoot = ensureWithinRoot(rootPath, ".");
+    const stats = await fs.stat(resolvedRoot);
+    if (!stats.isDirectory()) throw new Error("rootPath must be a directory.");
+
+    const validation = await validateWorkspaceIsolation(resolvedRoot);
+    res.status(validation.passed ? 200 : 400).json({
+      ok: validation.passed,
+      ...validation,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to validate workspace isolation.";
     res.status(400).json({ ok: false, error: message });
   }
 });
@@ -2321,10 +2767,20 @@ app.post("/api/ai/build-node", async (req, res) => {
       lastOutput = run.output;
       lastPromptPath = run.promptPath;
       lastLogPath = run.logPath;
+      const isolationBeforeTests = await validateWorkspaceIsolation(resolvedRoot);
+      if (!isolationBeforeTests.passed) {
+        lastTestResult = isolationFailureResult(isolationBeforeTests);
+        previousTestFailure = `${lastTestResult.failures.join("\n\n")}\n\n[stderr tail]\n${lastTestResult.stderr.slice(-2000)}`;
+        continue;
+      }
       const tests = await runNodeTests({ cwd: resolvedRoot });
       lastTestResult = tests;
-      if (tests.passed) break;
-      previousTestFailure = `${tests.failures.join("\n\n")}\n\n[stderr tail]\n${tests.stderr.slice(-2000)}`;
+      if (tests.passed) {
+        const isolationAfterTests = await validateWorkspaceIsolation(resolvedRoot);
+        if (isolationAfterTests.passed) break;
+        lastTestResult = isolationFailureResult(isolationAfterTests);
+      }
+      previousTestFailure = `${lastTestResult.failures.join("\n\n")}\n\n[stderr tail]\n${lastTestResult.stderr.slice(-2000)}`;
     }
 
     const afterSnapshot = await snapshotWorkspaceMtimes(resolvedRoot);
@@ -2356,19 +2812,23 @@ app.post("/api/build-state/save", async (req, res) => {
       res.status(400).json({ ok: false, error: "rootPath required" });
       return;
     }
-    const absolutePath = ensureWithinRoot(rootPath, BUILD_STATE_RELPATH);
     if (state === null || state === undefined) {
+      const absolutePath = ensureWithinRoot(rootPath, BUILD_STATE_RELPATH);
+      await assertPathInsideRealRoot(rootPath, absolutePath, "Build state file").catch((err) => {
+        if (err && err.code === "ENOENT") return;
+        throw err;
+      });
       await fs.unlink(absolutePath).catch((err) => {
         if (err && err.code !== "ENOENT") throw err;
       });
       res.json({ ok: true, cleared: true });
       return;
     }
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    const absolutePath = await ensureWritablePathWithinRoot(rootPath, BUILD_STATE_RELPATH);
     await fs.writeFile(absolutePath, JSON.stringify(state, null, 2));
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ ok: false, error: String(error?.message || error) });
+    res.status(isWorkspacePathError(error) ? 400 : 500).json({ ok: false, error: String(error?.message || error) });
   }
 });
 
@@ -2381,6 +2841,7 @@ app.post("/api/build-state/load", async (req, res) => {
     }
     const absolutePath = ensureWithinRoot(rootPath, BUILD_STATE_RELPATH);
     try {
+      await assertPathInsideRealRoot(rootPath, absolutePath, "Build state file");
       const content = await fs.readFile(absolutePath, "utf8");
       res.json({ ok: true, state: JSON.parse(content) });
     } catch (err) {
@@ -2391,7 +2852,7 @@ app.post("/api/build-state/load", async (req, res) => {
       }
     }
   } catch (error) {
-    res.status(500).json({ ok: false, error: String(error?.message || error) });
+    res.status(isWorkspacePathError(error) ? 400 : 500).json({ ok: false, error: String(error?.message || error) });
   }
 });
 

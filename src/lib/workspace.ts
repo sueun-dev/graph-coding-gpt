@@ -29,6 +29,20 @@ const TEXT_EXTENSIONS = new Set([
   "gitignore",
 ]);
 
+const SKIPPED_WORKSPACE_DIRS = new Set([
+  ".git",
+  ".claude",
+  ".tmp",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "dist",
+  "generated",
+  "node_modules",
+]);
+
 type MapFileOptions = {
   size?: number;
   type?: string;
@@ -70,6 +84,10 @@ export const createWorkspaceFilesFromFileList = (fileList: FileList | File[]) =>
   const rootName = firstPath.length > 1 ? firstPath[0] : "workspace";
 
   const mapped = files
+    .filter((file) => {
+      const relativePath = ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
+      return !relativePath.split("/").some((part) => SKIPPED_WORKSPACE_DIRS.has(part));
+    })
     .map((file) => {
       const relative = ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
         .split("/")
@@ -112,6 +130,9 @@ export const createWorkspaceFilesFromDirectoryHandle = async (handle: FileSystem
 
     for await (const [, entry] of entries) {
       if (entry.kind === "directory") {
+        if (SKIPPED_WORKSPACE_DIRS.has(entry.name)) {
+          continue;
+        }
         await visit(entry as FileSystemDirectoryHandle, [...prefix, entry.name]);
         continue;
       }

@@ -1,13 +1,13 @@
 # Graph Coding GPT
 
-Turn a sentence into a diagram, edit the diagram, then let GPT-5.5 implement it **one node at a time** with tests that have to go green before the next node starts.
+Turn a sentence into a diagram, edit the diagram, then let Codex implement it **one node at a time** with tests that have to go green before the next node starts.
 
 Not a single-shot code generator. A visible, editable, per-node iterative build loop you drive from a React Flow canvas.
 
 ## The Flow
 
 ```
- Brief (a sentence)         →   GPT-5.5 drafts a diagram
+ Brief (a sentence)         →   Codex drafts a diagram
  ──────────────────
  Diagram (edit on canvas)   →   nodes, edges, per-node intent/behavior/tests
  ──────────────────
@@ -25,9 +25,10 @@ You own the diagram. The loop turns each node into code + tests, fails visibly, 
 
 ## What the app actually does
 
-- **Brief → Diagram.** One sentence, one button. GPT-5.5 returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
+- **Brief → Diagram.** One sentence, one button. Codex returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
 - **Per-node build loop.** Topological order (ties broken by x-position), `note`/`group` shapes skipped. Each node goes implementing → done | failed. On failure, the test output is fed into the retry prompt — up to 3 retries.
 - **Real tests.** Every node writes vitest tests under `tests/<node-slug>/`. The runner pins to the workspace's own `node_modules/.bin/vitest` so it never resolves to a sibling project's version.
+- **Workspace isolation gate.** After every Codex attempt, the server rejects external symlinks, host absolute path references, and invalid pnpm `node_modules` package entries before treating the node as done.
 - **Correct cross-node context.** Each node's prompt includes the files produced by every prior completed node, so codex imports from them instead of re-implementing.
 - **Persistence.** Diagram and build state both live on disk under `.graphcoding/` (debounced), and auto-restore on workspace open. You can close the tab mid-build and come back.
 - **Stop that actually stops.** Clicking Stop aborts the in-flight fetch via `AbortController` and invalidates a generation counter, so a late response can't overwrite the paused state.
@@ -93,12 +94,13 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
 
  server/
    index.mjs             express API on :8791 (override with GRAPHCODING_PORT)
-     /api/ai/diagram        brief → structured diagram (gpt-5.5)
-     /api/ai/spec           diagram → structured spec (gpt-5.5, optional)
+     /api/ai/diagram        brief → structured diagram (gpt-5.4)
+     /api/ai/spec           diagram → structured spec (gpt-5.4, optional)
      /api/ai/build-order    topological sort (note/group skipped)
      /api/ai/build-node     codex workspace-write + vitest + retry
      /api/build-state/save  persist .graphcoding/build-state.json
      /api/build-state/load  auto-restore on workspace open
+     /api/workspace/validate-isolation  external-link/path guard
      /api/workspace/*       open-folder, read-file, write-artifacts
 ```
 
@@ -121,14 +123,15 @@ Things that broke during real E2E testing and got fixed:
 - **Stop not stopping.** In-flight fetch kept going; late response overwrote paused state. Fixed with `AbortController` + a `buildGenRef` generation counter; every await re-checks `isCurrent()`.
 - **Stale per-node context.** The driver kept a local snapshot of `records` that never updated; node N always saw `previouslyBuilt = []`. Fixed by mirroring every `updateNodeRecord` into the local snapshot atomically.
 - **File diff missing modifications.** The `files` list only captured new files. Replaced with an mtime snapshot before/after so modified files (`package.json`, shared utils) are reported too.
-- **Path-escape inconsistency.** `/api/build-state/save|load` and `/api/ai/build-node` bypassed `ensureWithinRoot`. All three now route through it.
+- **Path-escape inconsistency.** `/api/build-state/save|load` and `/api/ai/build-node` bypassed `ensureWithinRoot`; file read/write APIs also needed realpath checks so existing symlinks cannot escape the workspace. These now route through root + realpath guards.
+- **External dependency leakage.** Codex once linked `node_modules` to a sibling project. Build-node now runs a workspace isolation gate after every attempt and feeds violations back into the retry loop instead of silently passing.
 - **Reload hang.** `reloadNativeWorkspace` errors inside the loop used to leave `running:true` forever. Now wrapped in a `safeReloadNativeWorkspace` that surfaces a notice and lets the driver continue.
 - **Cross-workspace diagram overwrite.** Opening workspace B right after A could write A's nodes into B's disk file. A `hydratedKeyRef` now gates the save effect: only writes after the load effect has confirmed the current key.
 - **Silent 20× `spawnSync`.** `codexStatus()` forked a process on every request. Now cached with a 30s TTL; `/api/auth/status` still takes a fresh read.
 
 ## Limitations
 
-- Diagram generation and each node build take time — `codex gpt-5.5` with reasoning effort `high` is usually 1–4 minutes per call.
+- Diagram generation and each node build take time — `codex` runs `gpt-5.4` with reasoning effort `medium` by default. Override with `GRAPHCODING_CODEX_MODEL` or `GRAPHCODING_CODEX_REASONING_EFFORT`.
 - `"testing"` and `"fixing"` statuses are defined but the client doesn't currently stream intermediate server events, so the UI jumps `implementing → done | failed`. Server-sent events for in-progress retries is the next UX upgrade.
 - Fallback diagrams/specs (when codex fails) return with `ok:true`. The Build Loop already blocks Start when diagram source is fallback, but the spec path still ships a template silently if codex dies — treat unexpectedly fast spec results with suspicion.
 - Only tested on macOS with ChatGPT-backed codex login. Windows/Linux should work but the native folder dialog uses zenity/powershell fallbacks that haven't had the same mileage.

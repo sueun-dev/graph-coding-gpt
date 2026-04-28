@@ -15,7 +15,7 @@ export default function BottomPanel({ diagram, result, error, loading }: BottomP
 
   const body = useMemo(() => {
     if (loading) {
-      return <p className="panel-message">GPT-5.5가 도식화를 읽고 구조화된 스펙을 생성하는 중입니다.</p>;
+      return <p className="panel-message">Codex가 도식화를 읽고 구조화된 스펙을 생성하는 중입니다.</p>;
     }
 
     if (error) {

@@ -64,6 +64,7 @@ const initialFlow = createInitialFlow();
 const DIAGRAM_STORAGE_PREFIX = "graph-coding-gpt.prototype.v2";
 const LEGACY_DIAGRAM_STORAGE_KEY = "graph-coding-gpt.prototype";
 const BRIEF_STORAGE_PREFIX = "graph-coding-gpt.brief.v1";
+const LAST_NATIVE_WORKSPACE_KEY = "graph-coding-gpt.last-native-workspace.v1";
 
 const nodeTypes = {
   diagram: DiagramNodeRenderer,
@@ -73,6 +74,8 @@ type AuthStatus = {
   codexInstalled: boolean;
   codexAuthenticated: boolean;
   detail: string;
+  model?: string;
+  reasoningEffort?: string;
 };
 
 type AuxPanel = "ai" | "inspector" | "build";
@@ -120,10 +123,12 @@ export default function App() {
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [manualPath, setManualPath] = useState("");
   const [manualPathLoading, setManualPathLoading] = useState(false);
+  const [folderDialogLoading, setFolderDialogLoading] = useState(false);
   const [activeEditor, setActiveEditor] = useState<string>("diagram");
   const [activeAuxPanel, setActiveAuxPanel] = useState<AuxPanel>("ai");
   const flow = useReactFlow();
   const setupPromptedKeyRef = useRef("");
+  const restoredWorkspaceRef = useRef(false);
   const diagramRequestIdRef = useRef(0);
   const [diagramHydrated, setDiagramHydrated] = useState(false);
   // Tracks which diagramStorageKey the current {nodes, edges} state was loaded
@@ -520,7 +525,35 @@ export default function App() {
 
     const loaded = createWorkspaceFilesFromNativeListing(data.rootPath, data.files);
     await loadWorkspace(data.rootName || loaded.rootName, loaded.files, "native", null, data.rootPath);
+    localStorage.setItem(LAST_NATIVE_WORKSPACE_KEY, data.rootPath);
   };
+
+  useEffect(() => {
+    if (restoredWorkspaceRef.current || workspaceMode !== "none" || workspaceFiles.length > 0) {
+      return;
+    }
+
+    restoredWorkspaceRef.current = true;
+    const lastWorkspace = localStorage.getItem(LAST_NATIVE_WORKSPACE_KEY);
+    if (!lastWorkspace) {
+      return;
+    }
+
+    setManualPathLoading(true);
+    setWorkspaceNotice(`Restoring ${lastWorkspace} ...`);
+    void reloadNativeWorkspace(lastWorkspace)
+      .then(() => {
+        setWorkspaceNotice(`Restored ${lastWorkspace}`);
+      })
+      .catch((caught) => {
+        localStorage.removeItem(LAST_NATIVE_WORKSPACE_KEY);
+        const message = caught instanceof Error ? caught.message : "마지막 워크스페이스를 복구하지 못했습니다.";
+        setWorkspaceNotice(`Last workspace restore failed: ${message}`);
+      })
+      .finally(() => {
+        setManualPathLoading(false);
+      });
+  }, [workspaceFiles.length, workspaceMode]);
 
   const handleOpenFolderByPath = async (rawPath: string) => {
     const trimmed = rawPath.trim();
@@ -544,6 +577,11 @@ export default function App() {
   };
 
   const handleOpenFolder = async () => {
+    if (folderDialogLoading) {
+      return;
+    }
+
+    setFolderDialogLoading(true);
     setWorkspaceNotice("Opening native folder dialog...");
 
     try {
@@ -571,6 +609,8 @@ export default function App() {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "네이티브 폴더를 열지 못했습니다.";
       setWorkspaceNotice(`${message} Import로 브라우저 폴더 로드를 시도할 수 있습니다.`);
+    } finally {
+      setFolderDialogLoading(false);
     }
   };
 
@@ -790,7 +830,7 @@ export default function App() {
       return;
     }
     if (diagramResult?.source === "fallback") {
-      setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 GPT-5.5 응답을 먼저 받으세요.");
+      setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 Codex 응답을 먼저 받으세요.");
       setActiveAuxPanel("ai");
       return;
     }
@@ -867,7 +907,7 @@ export default function App() {
     }
 
     const order = currentState.order;
-    let firstPendingHit = true;
+    let firstPendingHit = !order.some((id) => currentState?.records[id]?.status === "done");
 
     for (let i = 0; i < order.length; i++) {
       if (!isCurrent()) return;
@@ -1079,7 +1119,7 @@ export default function App() {
 
     if (activeEditor === "spec") {
       if (!result) {
-        return renderTextDocument("specification.md", "No generated specification yet.\n\nRun GPT-5.5 from the AI panel to generate one.");
+        return renderTextDocument("specification.md", "No generated specification yet.\n\nRun Codex from the AI panel to generate one.");
       }
 
       return renderTextDocument(
@@ -1122,11 +1162,12 @@ export default function App() {
     }
 
     if (workspaceFiles.length === 0 && !harnessConfig) {
+      const workspaceOpening = manualPathLoading || folderDialogLoading;
       return (
         <section className="welcome-screen">
           <div className="welcome-card">
             <h1>Open a project folder to start.</h1>
-            <p>폴더를 열면 Harness를 만들고, Brief를 써서 GPT-5.5로 diagram과 코드를 생성합니다.</p>
+            <p>폴더를 열면 Harness를 만들고, Brief를 써서 Codex로 diagram과 코드를 생성합니다.</p>
             <div className="welcome-manual-path">
               <div className="welcome-manual-path__row">
                 <input
@@ -1141,20 +1182,24 @@ export default function App() {
                       void handleOpenFolderByPath(manualPath);
                     }
                   }}
-                  disabled={manualPathLoading}
+                  disabled={workspaceOpening}
                   spellCheck={false}
                   autoComplete="off"
                 />
                 <button
                   className="primary-button compact-button"
                   onClick={() => void handleOpenFolderByPath(manualPath)}
-                  disabled={manualPathLoading || !manualPath.trim()}
+                  disabled={workspaceOpening || !manualPath.trim()}
                 >
                   {manualPathLoading ? "Opening..." : "Open"}
                 </button>
               </div>
-              <button className="ghost-button compact-button welcome-manual-path__native" onClick={() => void handleOpenFolder()}>
-                또는 네이티브 대화상자로 폴더 선택
+              <button
+                className="ghost-button compact-button welcome-manual-path__native"
+                onClick={() => void handleOpenFolder()}
+                disabled={workspaceOpening}
+              >
+                {folderDialogLoading ? "Opening native dialog..." : "또는 네이티브 대화상자로 폴더 선택"}
               </button>
               {workspaceNotice ? <p className="welcome-manual-path__notice">{workspaceNotice}</p> : null}
             </div>
@@ -1225,7 +1270,7 @@ export default function App() {
         <div className="title-bar__actions">
           <span className="title-pill">{workspaceName}</span>
           <span className={`title-pill ${auth?.codexAuthenticated ? "is-ready" : ""}`}>
-            {auth?.codexAuthenticated ? "GPT-5.5 Ready" : "Auth Pending"}
+            {auth?.codexAuthenticated ? (auth.model && auth.model !== "Codex default" ? `${auth.model} Ready` : "Codex Ready") : "Auth Pending"}
           </span>
         </div>
       </header>
@@ -1324,7 +1369,7 @@ export default function App() {
                     : diagram.nodes.length === 0
                       ? "먼저 diagram을 만들거나 확정하세요."
                       : diagramResult?.source === "fallback"
-                        ? "현재 diagram은 fallback 결과입니다. 실제 GPT-5.5 응답을 받은 뒤 실행하세요."
+                        ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
                         : ""
                 }
                 onStart={() => void startBuildLoop()}

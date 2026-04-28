@@ -45,7 +45,7 @@ export default function RunPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">AI CONTROL</p>
-          <h2>GPT-5.5 Runtime</h2>
+          <h2>Codex Runtime</h2>
         </div>
         <span className={`runtime-status ${auth?.codexAuthenticated ? "ok" : "warn"}`}>
           {auth?.codexAuthenticated ? "Codex Ready" : "Auth Check Needed"}
@@ -111,7 +111,7 @@ export default function RunPanel({
           <p>{diagramResult.diagram.summary}</p>
           {diagramResult.source === "fallback" ? (
             <p className="result-warning">
-              이 결과는 fallback diagram입니다 (GPT-5.5 응답이 아닌 대체 결과). Build Loop은 실제 응답을 받은 뒤에만 실행할 수 있습니다.
+              이 결과는 fallback diagram입니다 (Codex 응답이 아닌 대체 결과). Build Loop은 실제 응답을 받은 뒤에만 실행할 수 있습니다.
             </p>
           ) : null}
           {diagramResult.error ? (

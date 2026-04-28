@@ -53,7 +53,7 @@ export default function DiagramEmptyState({
 
       <h1 className="diagram-empty__title">무엇을 만들까요?</h1>
       <p className="diagram-empty__subtitle">
-        한 문장이면 됩니다. GPT-5.5가 노드와 관계선을 그려주면, 이어서 캔버스에서 직접 편집하고 마지막에
+        한 문장이면 됩니다. Codex가 노드와 관계선을 그려주면, 이어서 캔버스에서 직접 편집하고 마지막에
         Build Loop이 노드 단위로 코드 + 테스트를 작성합니다.
       </p>
 
@@ -73,7 +73,7 @@ export default function DiagramEmptyState({
 
       <div className="diagram-empty__cta-row">
         <button className="diagram-empty__cta" onClick={onGenerate} disabled={!canGenerate}>
-          {loading ? "GPT-5.5가 도식화 중…" : "Generate Diagram"}
+          {loading ? "Codex가 도식화 중…" : "Generate Diagram"}
         </button>
         <span className="diagram-empty__shortcut">⌘/Ctrl + Enter</span>
       </div>
