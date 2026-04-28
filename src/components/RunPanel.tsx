@@ -72,7 +72,7 @@ export default function RunPanel({
             </button>
           </div>
           <p className="runtime-hint">
-            처음부터 다시 만들려면 좌측 EXPLORER의 <strong>↺</strong>로 지운 뒤 실행하세요.
+            처음부터 다시 만들려면 좌측 EXPLORER의 <strong>Reset</strong>으로 지운 뒤 실행하세요.
           </p>
         </div>
       ) : (

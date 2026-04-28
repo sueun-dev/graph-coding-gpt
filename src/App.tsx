@@ -25,6 +25,7 @@ import {
   createFlowFromBlueprint,
   createInitialFlow,
   createNode,
+  isBuildableShape,
   migratePersistedDiagram,
 } from "./lib/diagram";
 import {
@@ -326,6 +327,7 @@ export default function App() {
     edges,
     selectedNodes.map((node) => node.id),
   );
+  const hasBuildableNodes = diagram.nodes.some((node) => isBuildableShape(node.shape));
   const workspaceTree = useMemo(() => buildWorkspaceTree(workspaceFiles), [workspaceFiles]);
 
   const editorTabs = useMemo<EditorTab[]>(() => {
@@ -361,19 +363,36 @@ export default function App() {
   };
 
   const resetFlow = () => {
+    if (!window.confirm("Reset diagram? This clears nodes, edges, generated specs, and build state.")) {
+      return;
+    }
+
+    buildAbortRef.current = true;
+    buildGenRef.current += 1;
+    for (const controller of buildAbortControllersRef.current) {
+      controller.abort();
+    }
+    buildAbortControllersRef.current.clear();
+
     const fresh = createInitialFlow();
     setNodes(fresh.nodes);
     setEdges(fresh.edges);
     setResult(null);
     setLastSpecMode(null);
     setError("");
-
-
+    setBuildLoopState(null);
     setDiagramResult(null);
     setDiagramError("");
     setActiveEditor("diagram");
     if (diagramStorageKey) {
       localStorage.removeItem(diagramStorageKey);
+    }
+    if (workspaceMode === "native" && workspaceRootPath) {
+      void fetch("/api/build-state/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspaceRootPath, state: null }),
+      });
     }
   };
 
@@ -1360,7 +1379,7 @@ export default function App() {
                 canRun={
                   workspaceMode === "native" &&
                   Boolean(workspaceRootPath) &&
-                  diagram.nodes.length > 0 &&
+                  hasBuildableNodes &&
                   diagramResult?.source !== "fallback"
                 }
                 blockedReason={
@@ -1368,6 +1387,8 @@ export default function App() {
                     ? "Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다."
                     : diagram.nodes.length === 0
                       ? "먼저 diagram을 만들거나 확정하세요."
+                      : !hasBuildableNodes
+                        ? "Note는 빌드 대상이 아닙니다. State/Database/Service/API/Process/Input/Screen/Start-End 노드를 추가하세요."
                       : diagramResult?.source === "fallback"
                         ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
                         : ""

@@ -90,8 +90,8 @@ export default function ExplorerPanel({
       <div className="sidebar-section">
         <div className="sidebar-title-row">
           <span className="sidebar-heading">Explorer</span>
-          <button className="icon-button" onClick={onResetDiagram} title="Reset Diagram">
-            ↺
+          <button className="secondary-button compact-button" onClick={onResetDiagram} title="Reset Diagram">
+            Reset
           </button>
         </div>
         {openEditors.length > 0 ? (

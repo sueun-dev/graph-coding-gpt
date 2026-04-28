@@ -1160,11 +1160,10 @@ const validateDiagramCoverage = (diagram) => {
       "exercises one real round-trip.",
     );
   }
-  // Adapters now live under `service` (was the old `external`) or `api`
-  // (HTTP/IPC bridges). After the shape collapse, "external SDK wrapper"
-  // is just a service with adapter-themed title text.
+  // Adapters can be the database implementation itself (e.g. localStorage) or
+  // a service/api wrapper. Do not warn when the DB node is explicitly an adapter.
   const hasAdapterImpl = runtime.some(
-    (n) => (n.shape === "service" || n.shape === "api") && matchesKeywords(n, SHIPPABILITY_KEYWORDS.adapter),
+    (n) => (n.shape === "database" || n.shape === "service" || n.shape === "api") && matchesKeywords(n, SHIPPABILITY_KEYWORDS.adapter),
   );
   // Only flag adapter-impl absence if there's a database/contract node — i.e.
   // when persistence exists in the graph, *something* must implement it.

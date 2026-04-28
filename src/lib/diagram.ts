@@ -31,6 +31,8 @@ export const SHAPE_LIBRARY: ShapeDefinition[] = [
   { type: "note",     label: "Note",      description: "설명, 추천, TODO, 그룹 묶음 (빌드 무관)", accent: "#fff08b" },
 ];
 
+export const isBuildableShape = (shape: ShapeType): boolean => shape !== "note";
+
 // Legacy shape values written by older diagrams (and older fallbacks) — map them
 // to the new 9-shape vocabulary on read. Without this, .strict() schemas would
 // reject old saved diagrams and the user would lose work.
