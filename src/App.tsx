@@ -330,6 +330,17 @@ export default function App() {
     selectedNodes.map((node) => node.id),
   );
   const hasBuildableNodes = diagram.nodes.some((node) => isBuildableShape(node.shape));
+  const buildableDiagramNodeIds = useMemo(
+    () => nodes.filter((node) => isBuildableShape(node.data.shape)).map((node) => node.id),
+    [nodes],
+  );
+  const diagramSignature = useMemo(
+    () => createDiagramBuildSignature(nodes, edges),
+    [edges, nodes],
+  );
+  const compatibleBuildLoopState = buildLoopState && isBuildLoopStateCompatible(buildLoopState, buildableDiagramNodeIds, diagramSignature)
+    ? buildLoopState
+    : null;
   const workspaceTree = useMemo(() => buildWorkspaceTree(workspaceFiles), [workspaceFiles]);
 
   useEffect(() => {
@@ -521,6 +532,9 @@ export default function App() {
       setBuildLoopState(null);
       return;
     }
+    if (!diagramHydrated) {
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -532,7 +546,12 @@ export default function App() {
         const data = (await response.json()) as { ok: boolean; state: BuildLoopState | null };
         if (cancelled) return;
         if (data.ok && data.state) {
-          setBuildLoopState({ ...data.state, running: false, paused: true });
+          if (isBuildLoopStateCompatible(data.state, buildableDiagramNodeIds, diagramSignature)) {
+            setBuildLoopState({ ...data.state, running: false, paused: true });
+          } else {
+            setBuildLoopState(null);
+            setWorkspaceNotice("Ignored stale Build state because it does not match the current diagram.");
+          }
         } else {
           setBuildLoopState(null);
         }
@@ -541,7 +560,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [workspaceMode, workspaceRootPath]);
+  }, [buildableDiagramNodeIds, diagramHydrated, diagramSignature, workspaceMode, workspaceRootPath]);
 
   const reloadNativeWorkspace = async (rootPath: string) => {
     const response = await fetch("/api/workspace/open-folder", {
@@ -879,7 +898,7 @@ export default function App() {
     const isCurrent = () => buildGenRef.current === myGen && !buildAbortRef.current;
     setActiveAuxPanel("build");
 
-    let currentState = buildLoopState;
+    let currentState = compatibleBuildLoopState;
     if (!currentState || currentState.order.length === 0) {
       const orderResponse = await fetch("/api/ai/build-order", {
         method: "POST",
@@ -916,6 +935,7 @@ export default function App() {
         currentNodeId: null,
         order: orderData.order,
         records: initialRecords,
+        diagramSignature,
         startedAt: new Date().toISOString(),
       };
       setBuildLoopState(currentState);
@@ -938,6 +958,7 @@ export default function App() {
         running: true,
         paused: false,
         currentNodeId: null,
+        diagramSignature,
         failureReason: undefined,
       };
       setBuildLoopState(resumed);
@@ -1302,8 +1323,8 @@ export default function App() {
   };
 
   const hasWorkspace = workspaceFiles.length > 0;
-  const buildOrder = buildLoopState?.order ?? [];
-  const buildDone = buildOrder.filter((id) => buildLoopState?.records[id]?.status === "done").length;
+  const buildOrder = compatibleBuildLoopState?.order ?? [];
+  const buildDone = buildOrder.filter((id) => compatibleBuildLoopState?.records[id]?.status === "done").length;
   const activeWorkflowStep = !hasWorkspace || !harnessConfig ? "target" : activeAuxPanel;
   const workflowSteps = [
     {
@@ -1446,7 +1467,7 @@ export default function App() {
               ) : (
                 <BuildLoopPanel
                   diagram={diagram}
-                  state={buildLoopState}
+                  state={compatibleBuildLoopState}
                   canRun={
                     workspaceMode === "native" &&
                     Boolean(workspaceRootPath) &&
@@ -1484,7 +1505,7 @@ export default function App() {
         </div>
         <div className="status-bar__right">
           <span>{workspaceNotice || auth?.detail || "Checking Codex..."}</span>
-          <span>{diagramLoading ? "Generating diagram..." : loading ? "Generating spec..." : buildLoopState?.running ? `Building node ${buildLoopState.currentNodeId ? (buildLoopState.records[buildLoopState.currentNodeId]?.nodeTitle ?? "") : ""}...` : "Ready"}</span>
+          <span>{diagramLoading ? "Generating diagram..." : loading ? "Generating spec..." : compatibleBuildLoopState?.running ? `Building node ${compatibleBuildLoopState.currentNodeId ? (compatibleBuildLoopState.records[compatibleBuildLoopState.currentNodeId]?.nodeTitle ?? "") : ""}...` : "Ready"}</span>
         </div>
       </footer>
 
@@ -1503,4 +1524,56 @@ export default function App() {
 
 function selectedNodesLength(nodes: DiagramNodeType[]) {
   return nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0);
+}
+
+function createDiagramBuildSignature(nodes: DiagramNodeType[], edges: DiagramEdge[]) {
+  const buildableNodes = nodes
+    .filter((node) => isBuildableShape(node.data.shape))
+    .map((node) => ({
+      id: node.id,
+      shape: node.data.shape,
+      title: node.data.title,
+      actor: node.data.actor,
+      intent: node.data.intent,
+      behavior: node.data.behavior,
+      inputs: node.data.inputs,
+      outputs: node.data.outputs,
+      testHint: node.data.testHint,
+      notes: node.data.notes,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const buildableIds = new Set(buildableNodes.map((node) => node.id));
+  const buildableEdges = edges
+    .filter((edge) => buildableIds.has(edge.source) && buildableIds.has(edge.target))
+    .map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      relation: edge.data?.relation ?? edge.label ?? "",
+      notes: edge.data?.notes ?? "",
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  return JSON.stringify({ nodes: buildableNodes, edges: buildableEdges });
+}
+
+function isBuildLoopStateCompatible(
+  state: BuildLoopState,
+  buildableNodeIds: string[],
+  diagramSignature: string,
+) {
+  if (state.order.length !== buildableNodeIds.length) {
+    return false;
+  }
+
+  const buildableIdSet = new Set(buildableNodeIds);
+  if (state.order.some((id) => !buildableIdSet.has(id))) {
+    return false;
+  }
+
+  if (state.diagramSignature && state.diagramSignature !== diagramSignature) {
+    return false;
+  }
+
+  return true;
 }

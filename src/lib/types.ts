@@ -191,6 +191,7 @@ export type BuildLoopState = {
   currentNodeId: string | null;
   order: string[];
   records: Record<string, NodeBuildRecord>;
+  diagramSignature?: string;
   startedAt?: string;
   finishedAt?: string;
   failureReason?: string;
