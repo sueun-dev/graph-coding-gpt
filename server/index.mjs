@@ -2398,6 +2398,65 @@ const detectTestRunner = async (cwd) => {
   return missing("vitest");
 };
 
+const pathExists = async (candidatePath) => fs.access(candidatePath).then(() => true).catch(() => false);
+
+const preflightBuildWorkspace = async (cwd) => {
+  const isolation = await validateWorkspaceIsolation(cwd);
+  if (!isolation.passed) {
+    return {
+      ok: false,
+      error: isolationFailureResult(isolation).stderr,
+    };
+  }
+
+  let pkg;
+  try {
+    pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return { ok: true };
+    }
+    return { ok: false, error: `Build preflight failed: package.json is not valid JSON (${err?.message || err}).` };
+  }
+
+  const scripts = pkg.scripts || {};
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  const wantsVitest = /vitest/.test(scripts.test || "") || !!deps.vitest;
+  const wantsJest = !wantsVitest && !!deps.jest;
+  const wantsTypecheck = /(^|\s)tsc(\s|$)/.test(Object.values(scripts).join(" ")) || !!deps.typescript;
+
+  if (wantsVitest) {
+    const hasVitest = await pathExists(path.join(cwd, "node_modules", ".bin", "vitest"))
+      || await pathExists(path.join(cwd, "node_modules", "vitest", "vitest.mjs"));
+    if (!hasVitest) {
+      return {
+        ok: false,
+        error: "Build preflight failed: local vitest is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
+      };
+    }
+  }
+
+  if (wantsJest && !(await pathExists(path.join(cwd, "node_modules", ".bin", "jest")))) {
+    return {
+      ok: false,
+      error: "Build preflight failed: local jest is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
+    };
+  }
+
+  if (wantsTypecheck) {
+    const hasTsc = await pathExists(path.join(cwd, "node_modules", ".bin", "tsc"))
+      || await pathExists(path.join(cwd, "node_modules", "typescript", "lib", "tsc.js"));
+    if (!hasTsc) {
+      return {
+        ok: false,
+        error: "Build preflight failed: local TypeScript is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
+      };
+    }
+  }
+
+  return { ok: true };
+};
+
 const extractFailureLines = (text) => {
   const failures = [];
   const seen = new Set();
@@ -2757,6 +2816,12 @@ app.post("/api/ai/build-node", async (req, res) => {
     const resolvedRoot = ensureWithinRoot(rootPath, ".");
     const stats = await fs.stat(resolvedRoot);
     if (!stats.isDirectory()) throw new Error("rootPath must be a directory.");
+
+    const preflight = await preflightBuildWorkspace(resolvedRoot);
+    if (!preflight.ok) {
+      res.status(400).json({ ok: false, error: preflight.error });
+      return;
+    }
 
     const beforeSnapshot = await snapshotWorkspaceMtimes(resolvedRoot);
     const priorList = Array.isArray(previouslyBuilt) ? previouslyBuilt : [];
