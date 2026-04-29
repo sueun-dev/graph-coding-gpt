@@ -1419,24 +1419,6 @@ export default function App() {
 
         {hasWorkspace ? (
           <aside className="auxiliary-bar">
-            <div className="auxiliary-tabs">
-              <button className={activeAuxPanel === "ai" ? "is-active" : ""} onClick={() => setActiveAuxPanel("ai")}>
-                <span>2</span>
-                <strong>Generate</strong>
-                <small>Brief → diagram</small>
-              </button>
-              <button className={activeAuxPanel === "inspector" ? "is-active" : ""} onClick={() => setActiveAuxPanel("inspector")}>
-                <span>3</span>
-                <strong>Edit</strong>
-                <small>Node details</small>
-              </button>
-              <button className={activeAuxPanel === "build" ? "is-active" : ""} onClick={() => setActiveAuxPanel("build")}>
-                <span>4</span>
-                <strong>Build</strong>
-                <small>Code + tests</small>
-              </button>
-            </div>
-
             <div className="auxiliary-body">
               {activeAuxPanel === "ai" ? (
                 <RunPanel

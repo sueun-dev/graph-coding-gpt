@@ -221,8 +221,7 @@ button {
 .sidebar-heading,
 .workspace-actions,
 .button-row,
-.runtime-meta,
-.auxiliary-tabs {
+.runtime-meta {
   display: flex;
   align-items: center;
 }
@@ -854,79 +853,8 @@ button {
 
 .auxiliary-bar {
   display: grid;
-  grid-template-rows: 68px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   border-left: 1px solid var(--border);
-}
-
-.auxiliary-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px;
-  background: #252526;
-  border-bottom: 1px solid var(--border);
-}
-
-.auxiliary-tabs button {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  align-items: center;
-  gap: 2px 7px;
-  min-width: 0;
-  height: 100%;
-  padding: 8px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  color: #9f9f9f;
-  text-align: left;
-}
-
-.auxiliary-tabs button span {
-  grid-row: 1 / 3;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: #303030;
-  color: #d6d6d6;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.auxiliary-tabs button strong {
-  overflow: hidden;
-  color: inherit;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auxiliary-tabs button small {
-  overflow: hidden;
-  color: #818181;
-  font-size: 10px;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auxiliary-tabs button.is-active {
-  color: #ffffff;
-  border-color: rgba(78, 201, 176, 0.55);
-  background: rgba(78, 201, 176, 0.08);
-}
-
-.auxiliary-tabs button.is-active span {
-  background: #0e639c;
-  color: #ffffff;
-}
-
-.auxiliary-tabs button.is-active small {
-  color: #baeade;
 }
 
 .auxiliary-body {

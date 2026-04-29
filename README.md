@@ -42,7 +42,7 @@ After opening a folder:
 - **Top:** one workflow rail: **Target → Generate → Edit → Build**.
 - **Left:** Project target, architecture blocks, active docs, and files.
 - **Center:** React Flow canvas + a small bottom panel that starts with just `GRAPH JSON` (SPEC / BUILD PROMPT / ITERATION tabs appear only once you've generated a spec).
-- **Right:** three task panels — **Generate** (brief + Generate Diagram + collapsed optional Spec), **Edit** (selected node/edge details), **Build** (Start Build Loop, per-node status list).
+- **Right:** one detail panel for the currently selected workflow step. The top rail is the only place that switches **Generate / Edit / Build**.
 
 Spec generation is deliberately collapsed into an optional `<details>` because **the Build Loop does not read the spec** — spec is for human review and export.
 
