@@ -6,6 +6,8 @@ type BuildLoopPanelProps = {
   state: BuildLoopState | null;
   canRun: boolean;
   blockedReason: string;
+  syncing: boolean;
+  onSync: () => void;
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
@@ -25,6 +27,8 @@ export default function BuildLoopPanel({
   state,
   canRun,
   blockedReason,
+  syncing,
+  onSync,
   onStart,
   onStop,
   onReset,
@@ -33,6 +37,7 @@ export default function BuildLoopPanel({
   const records = state?.records ?? {};
   const hasOrder = order.length > 0;
   const running = !!state?.running;
+  const hasStarted = Boolean(state?.startedAt);
   const doneCount = order.filter((id) => records[id]?.status === "done").length;
   const failedCount = order.filter((id) => records[id]?.status === "failed").length;
 
@@ -60,8 +65,11 @@ export default function BuildLoopPanel({
         </div>
         {!canRun ? <p className="result-warning">{blockedReason}</p> : null}
         <div className="button-row">
-          <LiquidGlassButton width={hasOrder ? 150 : 164} height={34} onClick={onStart} disabled={!canRun || running}>
-            {running ? "Running..." : hasOrder ? "Continue Build" : "Start Build Loop"}
+          <LiquidGlassButton tone="secondary" width={102} height={34} onClick={onSync} disabled={!canRun || running || syncing}>
+            {syncing ? "Syncing..." : "Sync"}
+          </LiquidGlassButton>
+          <LiquidGlassButton width={hasOrder && hasStarted ? 150 : 164} height={34} onClick={onStart} disabled={!canRun || running || syncing}>
+            {running ? "Running..." : hasOrder && hasStarted ? "Continue Build" : "Start Build Loop"}
           </LiquidGlassButton>
           <LiquidGlassButton tone="secondary" width={76} height={34} onClick={onStop} disabled={!running}>
             Stop
@@ -72,6 +80,7 @@ export default function BuildLoopPanel({
             </LiquidGlassButton>
           ) : null}
         </div>
+        <p className="runtime-hint">Sync는 현재 diagram을 기준으로 Build queue를 다시 만듭니다.</p>
         {hasOrder ? (
           <p className="build-loop-summary">
             {doneCount} / {order.length} done

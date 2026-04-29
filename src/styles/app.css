@@ -226,6 +226,11 @@ button {
   align-items: center;
 }
 
+.button-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .sidebar-title-row,
 .panel-header,
 .editor-view__header {

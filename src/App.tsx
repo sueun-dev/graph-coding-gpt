@@ -104,6 +104,7 @@ export default function App() {
   const [diagramLoading, setDiagramLoading] = useState(false);
   const [lastSpecMode, setLastSpecMode] = useState<"full" | "selection" | null>(null);
   const [buildLoopState, setBuildLoopState] = useState<BuildLoopState | null>(null);
+  const [buildSyncing, setBuildSyncing] = useState(false);
   const buildAbortRef = useRef(false);
   // Incremented every time a new build-loop run starts. Each loop captures the
   // value at entry and bails if it changes — that way a late fetch response
@@ -866,6 +867,86 @@ export default function App() {
     }));
   };
 
+  const createPendingBuildStateFromDiagram = async (running: boolean): Promise<BuildLoopState> => {
+    const orderResponse = await fetch("/api/ai/build-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ diagram }),
+    });
+    const orderData = (await orderResponse.json()) as { ok: boolean; order?: string[]; cycles?: boolean; error?: string };
+    if (!orderData.ok || !orderData.order) {
+      throw new Error(orderData.error || "빌드 순서를 계산할 수 없습니다.");
+    }
+    if (orderData.cycles) {
+      setWorkspaceNotice("Diagram에 사이클이 있어 일부 노드는 마지막에 위치 순서대로 빌드됩니다. 사이클을 정리하면 결과가 더 정확해집니다.");
+    }
+
+    const initialRecords: Record<string, NodeBuildRecord> = {};
+    for (const id of orderData.order) {
+      const node = diagram.nodes.find((n) => n.id === id);
+      if (!node) continue;
+      initialRecords[id] = {
+        nodeId: id,
+        nodeTitle: node.title || id.slice(0, 8),
+        nodeShape: node.shape,
+        status: "pending",
+        attempts: 0,
+        files: [],
+        lastOutput: "",
+        testResult: null,
+      };
+    }
+
+    const now = new Date().toISOString();
+    return {
+      running,
+      paused: false,
+      currentNodeId: null,
+      order: orderData.order,
+      records: initialRecords,
+      diagramSignature,
+      ...(running ? { startedAt: now } : { syncedAt: now }),
+    };
+  };
+
+  const syncBuildStateToDiagram = async () => {
+    if (workspaceMode !== "native" || !workspaceRootPath) {
+      setWorkspaceNotice("Build Sync는 Open Folder로 연 native workspace에서만 실행됩니다.");
+      setActiveAuxPanel("build");
+      return;
+    }
+    if (!hasBuildableNodes) {
+      setWorkspaceNotice("Sync할 빌드 대상 노드가 없습니다. State/Service/Screen 같은 buildable 노드를 추가하세요.");
+      setActiveAuxPanel("build");
+      return;
+    }
+    if (buildLoopState?.running) {
+      setWorkspaceNotice("실행 중인 Build를 먼저 Stop한 뒤 Sync하세요.");
+      setActiveAuxPanel("build");
+      return;
+    }
+
+    buildAbortRef.current = true;
+    buildGenRef.current += 1;
+    for (const controller of buildAbortControllersRef.current) {
+      controller.abort();
+    }
+    buildAbortControllersRef.current.clear();
+    setBuildSyncing(true);
+    setActiveAuxPanel("build");
+
+    try {
+      const synced = await createPendingBuildStateFromDiagram(false);
+      setBuildLoopState(synced);
+      await persistBuildState(synced);
+      setWorkspaceNotice(`Build state synced from current diagram (${synced.order.length} nodes).`);
+    } catch (caught) {
+      setWorkspaceNotice(caught instanceof Error ? caught.message : "Build state sync failed.");
+    } finally {
+      setBuildSyncing(false);
+    }
+  };
+
   // Quietly reload the native workspace — never let a tree refresh hang the
   // build loop. Errors are logged to console and surfaced as a notice.
   const safeReloadNativeWorkspace = async (rootPath: string) => {
@@ -887,6 +968,11 @@ export default function App() {
       setWorkspaceNotice("먼저 diagram을 생성하거나 확정하세요.");
       return;
     }
+    if (!hasBuildableNodes) {
+      setWorkspaceNotice("빌드 대상 노드가 없습니다. State/Service/Screen 같은 buildable 노드를 추가하세요.");
+      setActiveAuxPanel("build");
+      return;
+    }
     if (diagramResult?.source === "fallback") {
       setWorkspaceNotice("Diagram이 fallback 결과입니다. 실제 Codex 응답을 먼저 받으세요.");
       setActiveAuxPanel("ai");
@@ -900,44 +986,13 @@ export default function App() {
 
     let currentState = compatibleBuildLoopState;
     if (!currentState || currentState.order.length === 0) {
-      const orderResponse = await fetch("/api/ai/build-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ diagram }),
-      });
-      const orderData = (await orderResponse.json()) as { ok: boolean; order?: string[]; cycles?: boolean; error?: string };
-      if (!isCurrent()) return;
-      if (!orderData.ok || !orderData.order) {
-        setWorkspaceNotice(orderData.error || "빌드 순서를 계산할 수 없습니다.");
+      try {
+        currentState = await createPendingBuildStateFromDiagram(true);
+      } catch (caught) {
+        setWorkspaceNotice(caught instanceof Error ? caught.message : "빌드 순서를 계산할 수 없습니다.");
         return;
       }
-      if (orderData.cycles) {
-        setWorkspaceNotice("Diagram에 사이클이 있어 일부 노드는 마지막에 위치 순서대로 빌드됩니다. 사이클을 정리하면 결과가 더 정확해집니다.");
-      }
-      const initialRecords: Record<string, NodeBuildRecord> = {};
-      for (const id of orderData.order) {
-        const node = diagram.nodes.find((n) => n.id === id);
-        if (!node) continue;
-        initialRecords[id] = {
-          nodeId: id,
-          nodeTitle: node.title || id.slice(0, 8),
-          nodeShape: node.shape,
-          status: "pending",
-          attempts: 0,
-          files: [],
-          lastOutput: "",
-          testResult: null,
-        };
-      }
-      currentState = {
-        running: true,
-        paused: false,
-        currentNodeId: null,
-        order: orderData.order,
-        records: initialRecords,
-        diagramSignature,
-        startedAt: new Date().toISOString(),
-      };
+      if (!isCurrent()) return;
       setBuildLoopState(currentState);
       await persistBuildState(currentState);
     } else {
@@ -959,6 +1014,7 @@ export default function App() {
         paused: false,
         currentNodeId: null,
         diagramSignature,
+        startedAt: currentState.startedAt ?? new Date().toISOString(),
         failureReason: undefined,
       };
       setBuildLoopState(resumed);
@@ -1481,10 +1537,12 @@ export default function App() {
                         ? "먼저 diagram을 만들거나 확정하세요."
                         : !hasBuildableNodes
                           ? "Note는 빌드 대상이 아닙니다. State/Database/Service/API/Process/Input/Screen/Start-End 노드를 추가하세요."
-                        : diagramResult?.source === "fallback"
-                          ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
-                          : ""
+                          : diagramResult?.source === "fallback"
+                            ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
+                            : ""
                   }
+                  syncing={buildSyncing}
+                  onSync={() => void syncBuildStateToDiagram()}
                   onStart={() => void startBuildLoop()}
                   onStop={stopBuildLoop}
                   onReset={resetBuildLoop}
