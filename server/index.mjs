@@ -5,6 +5,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
 import { createHash } from "crypto";
+import { createServer as createNetServer } from "net";
 
 const app = express();
 // Port 8791 instead of the common 8787 to avoid collision with sibling dev
@@ -2555,17 +2556,18 @@ const packageManagerInstallCommand = (packageManager) => {
   }
 };
 
-const packageManagerRunScriptCommand = (packageManager, scriptName) => {
+const packageManagerRunScriptCommand = (packageManager, scriptName, passthroughArgs = []) => {
+  const npmStyleArgs = passthroughArgs.length > 0 ? ["--", ...passthroughArgs] : [];
   switch (packageManager) {
     case "pnpm":
-      return { cmd: "corepack", args: ["pnpm", "run", scriptName] };
+      return { cmd: "corepack", args: ["pnpm", "run", scriptName, ...npmStyleArgs] };
     case "yarn":
-      return { cmd: "corepack", args: ["yarn", "run", scriptName] };
+      return { cmd: "corepack", args: ["yarn", "run", scriptName, ...passthroughArgs] };
     case "bun":
-      return { cmd: "bun", args: ["run", scriptName] };
+      return { cmd: "bun", args: ["run", scriptName, ...passthroughArgs] };
     case "npm":
     default:
-      return { cmd: "npm", args: ["run", scriptName] };
+      return { cmd: "npm", args: ["run", scriptName, ...npmStyleArgs] };
   }
 };
 
@@ -2666,6 +2668,293 @@ const syncWorkspaceDependencies = async ({ cwd, harness, timeoutMs = 300000, sig
   }, null, 2));
 
   return { passed: true, skipped: false, reason: "installed", stdout: result.stdout, stderr: result.stderr, failures: [] };
+};
+
+const abortableDelay = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(buildAbortError());
+    return;
+  }
+  const finish = (fn, value) => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    fn(value);
+  };
+  const timer = setTimeout(() => finish(resolve), ms);
+  const onAbort = () => {
+    finish(reject, buildAbortError());
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+});
+
+const findFreePort = () => new Promise((resolve, reject) => {
+  const server = createNetServer();
+  server.on("error", reject);
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    server.close((err) => (err ? reject(err) : resolve(port)));
+  });
+});
+
+const fetchWithTimeout = async (url, timeoutMs, signal) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+};
+
+const waitForHttpReady = async ({ url, timeoutMs = 30000, signal }) => {
+  const startedAt = Date.now();
+  let lastError = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(signal);
+    try {
+      const response = await fetchWithTimeout(url, 1200, signal);
+      const text = await response.text().catch(() => "");
+      if (response.ok && text.trim().length > 0) {
+        return { status: response.status, sample: text.slice(0, 500) };
+      }
+      lastError = `HTTP ${response.status}`;
+    } catch (err) {
+      lastError = err?.name === "AbortError" ? "request timed out" : String(err?.message || err);
+    }
+    await abortableDelay(300, signal);
+  }
+  throw new Error(`Dev server did not serve ${url} within ${Math.round(timeoutMs / 1000)}s (${lastError || "no response"}).`);
+};
+
+const devServerArgsForWorkspace = ({ pkg, harness, port }) => {
+  const deps = {
+    ...(pkg.dependencies || {}),
+    ...(pkg.devDependencies || {}),
+  };
+  const frontend = String(harness?.stack?.frontend || "").toLowerCase();
+  if (deps.next || frontend.includes("next")) {
+    return ["-H", "127.0.0.1", "-p", String(port)];
+  }
+  if (deps.vite || frontend.includes("vite")) {
+    return ["--host", "127.0.0.1", "--port", String(port), "--strictPort"];
+  }
+  return ["--host", "127.0.0.1", "--port", String(port)];
+};
+
+const terminateProcessGroup = (child) => {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill("SIGTERM");
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  }, 2000).unref?.();
+};
+
+const runWorkspaceScriptIfPresent = async ({ cwd, pkg, harness, scriptName, timeoutMs = 300000, signal }) => {
+  if (typeof pkg.scripts?.[scriptName] !== "string" || !pkg.scripts[scriptName].trim()) {
+    return { skipped: true, passed: true, command: "", stdout: "", stderr: "", failures: [] };
+  }
+  const packageManager = normalizePackageManager(pkg.packageManager || harness?.stack?.packageManager || await detectPackageManagerName(cwd));
+  const { cmd, args } = packageManagerRunScriptCommand(packageManager, scriptName);
+  const result = await runWorkspaceCommand({ cwd, cmd, args, timeoutMs, signal, env: { CI: "true" } });
+  const command = [cmd, ...args].join(" ");
+  if (result.passed) {
+    return { skipped: false, passed: true, command, stdout: result.stdout, stderr: result.stderr, failures: [] };
+  }
+  const status = result.killed ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `exited with code ${result.code}`;
+  return {
+    skipped: false,
+    passed: false,
+    command,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    failures: [`${scriptName} script failed: ${command} ${status}.`, ...extractFailureLines(`${result.stdout}\n${result.stderr}`)],
+  };
+};
+
+const runDevServerSmoke = async ({ cwd, pkg, harness, timeoutMs = 45000, signal }) => {
+  if (typeof pkg.scripts?.dev !== "string" || !pkg.scripts.dev.trim()) {
+    return {
+      passed: false,
+      checks: [],
+      failures: ["Runtime smoke failed: package.json has no dev script, so the generated app cannot be executed."],
+      stdout: "",
+      stderr: "",
+    };
+  }
+
+  const packageManager = normalizePackageManager(pkg.packageManager || harness?.stack?.packageManager || await detectPackageManagerName(cwd));
+  const port = await findFreePort();
+  const url = `http://127.0.0.1:${port}/`;
+  const { cmd, args } = packageManagerRunScriptCommand(
+    packageManager,
+    "dev",
+    devServerArgsForWorkspace({ pkg, harness, port }),
+  );
+
+  let stdout = "";
+  let stderr = "";
+  let closed = false;
+  let exitCode = null;
+  const child = spawn(cmd, args, {
+    cwd,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...workspaceRuntimeEnv(cwd), CI: "true" },
+  });
+  child.stdout.on("data", (c) => { stdout += c.toString(); });
+  child.stderr.on("data", (c) => { stderr += c.toString(); });
+  child.on("close", (code) => {
+    closed = true;
+    exitCode = code;
+  });
+
+  const onAbort = () => terminateProcessGroup(child);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const ready = await waitForHttpReady({ url, timeoutMs, signal });
+    return {
+      passed: true,
+      checks: [`dev server served ${url} with HTTP ${ready.status}`],
+      failures: [],
+      stdout,
+      stderr,
+      url,
+      port,
+    };
+  } catch (err) {
+    const suffix = closed ? ` Dev server exited with code ${exitCode}.` : "";
+    return {
+      passed: false,
+      checks: [],
+      failures: [`Runtime smoke failed: ${err?.message || err}.${suffix}`],
+      stdout,
+      stderr,
+      url,
+      port,
+    };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    terminateProcessGroup(child);
+  }
+};
+
+const runWorkspaceRuntimeVerification = async ({ cwd, harness, signal }) => {
+  const startedAt = new Date().toISOString();
+  const checks = [];
+  const failures = [];
+  const stdoutParts = [];
+  const stderrParts = [];
+
+  const pkgPath = path.join(cwd, "package.json");
+  let pkg;
+  try {
+    pkg = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+  } catch (err) {
+    return {
+      status: "failed",
+      passed: false,
+      checks,
+      failures: [`Runtime verification failed: package.json is missing or invalid (${err?.message || err}).`],
+      stdout: "",
+      stderr: "",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    };
+  }
+
+  const isolationBefore = await validateWorkspaceIsolation(cwd);
+  if (!isolationBefore.passed) {
+    const failure = isolationFailureResult(isolationBefore);
+    return {
+      status: "failed",
+      passed: false,
+      checks,
+      failures: failure.failures,
+      stdout: failure.stdout,
+      stderr: failure.stderr,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    };
+  }
+
+  const dependencySync = await syncWorkspaceDependencies({ cwd, harness, signal });
+  if (!dependencySync.passed) {
+    return {
+      status: "failed",
+      passed: false,
+      checks,
+      failures: dependencySync.failures,
+      stdout: dependencySync.stdout,
+      stderr: dependencySync.stderr,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    };
+  }
+  checks.push(dependencySync.skipped ? `dependencies ${dependencySync.reason}` : "dependencies installed");
+
+  for (const scriptName of ["test", "typecheck", "build"]) {
+    const result = await runWorkspaceScriptIfPresent({ cwd, pkg, harness, scriptName, signal });
+    if (result.skipped) {
+      checks.push(`${scriptName} script skipped`);
+      continue;
+    }
+    stdoutParts.push(`\n[${scriptName} stdout]\n${result.stdout}`.trim());
+    stderrParts.push(`\n[${scriptName} stderr]\n${result.stderr}`.trim());
+    if (!result.passed) {
+      failures.push(...result.failures);
+      return {
+        status: "failed",
+        passed: false,
+        checks,
+        failures,
+        stdout: stdoutParts.filter(Boolean).join("\n"),
+        stderr: stderrParts.filter(Boolean).join("\n"),
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      };
+    }
+    checks.push(`${scriptName} passed`);
+  }
+
+  const runtime = await runDevServerSmoke({ cwd, pkg, harness, signal });
+  stdoutParts.push(runtime.stdout ? `\n[dev stdout]\n${runtime.stdout}`.trim() : "");
+  stderrParts.push(runtime.stderr ? `\n[dev stderr]\n${runtime.stderr}`.trim() : "");
+  checks.push(...runtime.checks);
+  failures.push(...runtime.failures);
+
+  const isolationAfter = await validateWorkspaceIsolation(cwd);
+  if (!isolationAfter.passed) {
+    const failure = isolationFailureResult(isolationAfter);
+    failures.push(...failure.failures);
+    stderrParts.push(failure.stderr);
+  } else {
+    checks.push("workspace isolation passed");
+  }
+
+  return {
+    status: failures.length === 0 ? "passed" : "failed",
+    passed: failures.length === 0,
+    checks,
+    failures,
+    stdout: stdoutParts.filter(Boolean).join("\n"),
+    stderr: stderrParts.filter(Boolean).join("\n"),
+    url: runtime.url,
+    port: runtime.port,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+  };
 };
 
 const runNodeTests = async ({ cwd, timeoutMs = 300000, signal }) => {
@@ -3168,6 +3457,41 @@ app.post("/api/ai/build-node", async (req, res) => {
       return;
     }
     res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/api/workspace/runtime-verify", async (req, res) => {
+  const { rootPath, harness } = req.body ?? {};
+  const abortController = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  try {
+    if (typeof rootPath !== "string" || !rootPath.trim()) {
+      res.status(400).json({ ok: false, error: "rootPath is required." });
+      return;
+    }
+
+    const resolvedRoot = ensureWithinRoot(rootPath, ".");
+    const stats = await fs.stat(resolvedRoot);
+    if (!stats.isDirectory()) throw new Error("rootPath must be a directory.");
+
+    const result = await runWorkspaceRuntimeVerification({
+      cwd: resolvedRoot,
+      harness,
+      signal: abortController.signal,
+    });
+    res.json({ ok: true, result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Runtime verification failed.";
+    if (abortController.signal.aborted) {
+      res.status(499).json({ ok: false, error: "Runtime verification was cancelled." });
+      return;
+    }
+    res.status(400).json({ ok: false, error: message });
   }
 });
 

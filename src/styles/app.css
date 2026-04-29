@@ -927,7 +927,7 @@ button {
 
 .codex-pipeline {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin: 12px 0;
 }
@@ -1826,6 +1826,57 @@ button {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.build-runtime-check {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #1a1a1a;
+  font-size: 12px;
+}
+
+.build-runtime-check.is-running {
+  border-color: #1e3a8a;
+  background: #111b2e;
+}
+
+.build-runtime-check.is-passed {
+  border-color: #14532d;
+  background: #0d1f14;
+}
+
+.build-runtime-check.is-failed {
+  border-color: #7f1d1d;
+  background: #20100f;
+}
+
+.build-runtime-check__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.build-runtime-check__head strong {
+  color: #eaeaea;
+}
+
+.build-runtime-check__head span {
+  color: #c7c7c7;
+  font-size: 11px;
+}
+
+.build-runtime-check p {
+  margin: 8px 0 0;
+  color: #c7c7c7;
+}
+
+.build-runtime-check ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #9ca3af;
 }
 
 .build-loop-item {

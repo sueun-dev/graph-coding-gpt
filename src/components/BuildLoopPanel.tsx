@@ -40,6 +40,14 @@ export default function BuildLoopPanel({
   const hasStarted = Boolean(state?.startedAt);
   const doneCount = order.filter((id) => records[id]?.status === "done").length;
   const failedCount = order.filter((id) => records[id]?.status === "failed").length;
+  const runtimeVerification = state?.runtimeVerification ?? null;
+  const runtimeLabel = runtimeVerification
+    ? runtimeVerification.status === "running"
+      ? "실행 검증 중"
+      : runtimeVerification.passed
+        ? "실행 검증 완료"
+        : "실행 검증 실패"
+    : "대기";
 
   return (
     <section className="build-loop-panel panel-surface">
@@ -62,6 +70,7 @@ export default function BuildLoopPanel({
           <LiquidGlassBadge width="100%" height={30}>Patch</LiquidGlassBadge>
           <LiquidGlassBadge width="100%" height={30}>Test</LiquidGlassBadge>
           <LiquidGlassBadge width="100%" height={30}>Verify</LiquidGlassBadge>
+          <LiquidGlassBadge width="100%" height={30}>Run</LiquidGlassBadge>
         </div>
         {!canRun ? <p className="result-warning">{blockedReason}</p> : null}
         <div className="button-row">
@@ -85,9 +94,33 @@ export default function BuildLoopPanel({
           <p className="build-loop-summary">
             {doneCount} / {order.length} done
             {failedCount > 0 ? ` · ${failedCount} failed` : ""}
+            {runtimeVerification ? ` · ${runtimeLabel}` : ""}
           </p>
         ) : null}
       </div>
+
+      {runtimeVerification ? (
+        <div className={`build-runtime-check is-${runtimeVerification.status}`}>
+          <div className="build-runtime-check__head">
+            <strong>Final Run</strong>
+            <span>{runtimeLabel}</span>
+          </div>
+          {runtimeVerification.url ? <p>served: {runtimeVerification.url}</p> : null}
+          {runtimeVerification.checks.length > 0 ? (
+            <ul>
+              {runtimeVerification.checks.slice(0, 6).map((check) => (
+                <li key={check}>{check}</li>
+              ))}
+            </ul>
+          ) : null}
+          {!runtimeVerification.passed && runtimeVerification.failures.length > 0 ? (
+            <details className="build-loop-failure">
+              <summary>runtime failure detail</summary>
+              <pre>{runtimeVerification.failures.slice(0, 4).join("\n\n").slice(0, 2400)}</pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {hasOrder ? (
         <ol className="build-loop-list">

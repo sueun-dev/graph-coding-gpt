@@ -42,6 +42,7 @@ import type {
   DiagramGenerationResponse,
   NodeBuildRecord,
   NodeBuildStatus,
+  RuntimeVerificationResult,
   DiagramNode as DiagramNodeType,
   EditorTab,
   HarnessConfig,
@@ -1140,11 +1141,86 @@ export default function App() {
     if (!isCurrent()) return;
     updateBuildState((prev) => ({
       ...prev,
-      running: false,
-      paused: false,
       currentNodeId: null,
-      finishedAt: new Date().toISOString(),
+      runtimeVerification: {
+        status: "running",
+        passed: false,
+        checks: ["Final runtime verification started"],
+        failures: [],
+        stdout: "",
+        stderr: "",
+        startedAt: new Date().toISOString(),
+      },
     }));
+    setWorkspaceNotice("Final verification: running test/typecheck/build and launching the generated app...");
+
+    const runtimeController = new AbortController();
+    buildAbortControllersRef.current.add(runtimeController);
+    try {
+      const response = await fetch("/api/workspace/runtime-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspaceRootPath, harness: harnessConfig }),
+        signal: runtimeController.signal,
+      });
+      if (!isCurrent()) return;
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; result?: RuntimeVerificationResult; error?: string } | null;
+      if (!response.ok || !data?.ok || !data.result) {
+        throw new Error(data?.error || "runtime verification failed");
+      }
+      const runtimeResult: RuntimeVerificationResult = {
+        ...data.result,
+        status: data.result.passed ? "passed" : "failed",
+        finishedAt: data.result.finishedAt ?? new Date().toISOString(),
+      };
+      if (!runtimeResult.passed) {
+        updateBuildState((prev) => ({
+          ...prev,
+          running: false,
+          paused: true,
+          currentNodeId: null,
+          failureReason: runtimeResult.failures[0] || "Final runtime verification failed.",
+          runtimeVerification: runtimeResult,
+        }));
+        setWorkspaceNotice("Final runtime verification failed. Check Build details.");
+        await safeReloadNativeWorkspace(workspaceRootPath);
+        return;
+      }
+
+      updateBuildState((prev) => ({
+        ...prev,
+        running: false,
+        paused: false,
+        currentNodeId: null,
+        runtimeVerification: runtimeResult,
+        finishedAt: new Date().toISOString(),
+      }));
+      setWorkspaceNotice(`Build finished and runtime verified${runtimeResult.url ? ` at ${runtimeResult.url}` : ""}.`);
+    } catch (caught) {
+      const aborted = caught instanceof DOMException && caught.name === "AbortError";
+      if (aborted || !isCurrent()) return;
+      const message = caught instanceof Error ? caught.message : "Final runtime verification failed.";
+      updateBuildState((prev) => ({
+        ...prev,
+        running: false,
+        paused: true,
+        currentNodeId: null,
+        failureReason: message,
+        runtimeVerification: {
+          status: "failed",
+          passed: false,
+          checks: [],
+          failures: [message],
+          stdout: "",
+          stderr: "",
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        },
+      }));
+      setWorkspaceNotice(message);
+    } finally {
+      buildAbortControllersRef.current.delete(runtimeController);
+    }
   };
 
   const stopBuildLoop = () => {
@@ -1563,7 +1639,17 @@ export default function App() {
         </div>
         <div className="status-bar__right">
           <span>{workspaceNotice || auth?.detail || "Checking Codex..."}</span>
-          <span>{diagramLoading ? "Generating diagram..." : loading ? "Generating spec..." : compatibleBuildLoopState?.running ? `Building node ${compatibleBuildLoopState.currentNodeId ? (compatibleBuildLoopState.records[compatibleBuildLoopState.currentNodeId]?.nodeTitle ?? "") : ""}...` : "Ready"}</span>
+          <span>
+            {diagramLoading
+              ? "Generating diagram..."
+              : loading
+                ? "Generating spec..."
+                : compatibleBuildLoopState?.running
+                  ? compatibleBuildLoopState.runtimeVerification?.status === "running"
+                    ? "Running final verification..."
+                    : `Building node ${compatibleBuildLoopState.currentNodeId ? (compatibleBuildLoopState.records[compatibleBuildLoopState.currentNodeId]?.nodeTitle ?? "") : ""}...`
+                  : "Ready"}
+          </span>
         </div>
       </footer>
 

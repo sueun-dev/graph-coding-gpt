@@ -171,6 +171,21 @@ export type NodeTestResult = {
   stderr: string;
 };
 
+export type RuntimeVerificationStatus = "pending" | "running" | "passed" | "failed";
+
+export type RuntimeVerificationResult = {
+  status: RuntimeVerificationStatus;
+  passed: boolean;
+  checks: string[];
+  failures: string[];
+  stdout: string;
+  stderr: string;
+  url?: string;
+  port?: number;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 export type NodeBuildRecord = {
   nodeId: string;
   nodeTitle: string;
@@ -196,6 +211,7 @@ export type BuildLoopState = {
   startedAt?: string;
   finishedAt?: string;
   failureReason?: string;
+  runtimeVerification?: RuntimeVerificationResult | null;
 };
 
 export type BuildNodeResponse = {
