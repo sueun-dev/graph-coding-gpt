@@ -198,6 +198,115 @@ button {
   color: #ffffff;
 }
 
+.liquid-glass-slot {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  line-height: 1;
+  isolation: isolate;
+}
+
+.liquid-glass-slot > div,
+.liquid-glass-slot > span {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.liquid-glass-shell,
+.liquid-glass-slot .glass {
+  width: 100%;
+  height: 100%;
+}
+
+.liquid-glass-shell .glass {
+  display: flex !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  gap: 0 !important;
+  padding: 0 !important;
+}
+
+.liquid-glass-shell .glass > div {
+  position: relative;
+  z-index: 1;
+  display: flex !important;
+  width: 100%;
+  height: 100%;
+  align-items: center !important;
+  justify-content: center !important;
+  font: inherit !important;
+  line-height: 1 !important;
+}
+
+.liquid-glass-slot.is-disabled {
+  opacity: 0.52;
+  pointer-events: none;
+}
+
+.liquid-glass-slot--badge {
+  pointer-events: none;
+}
+
+.liquid-glass-button,
+.liquid-glass-badge {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.02);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.45);
+}
+
+.liquid-glass-button {
+  appearance: none;
+  cursor: pointer;
+}
+
+.liquid-glass-button:disabled {
+  cursor: not-allowed;
+}
+
+.liquid-glass-button:focus-visible {
+  outline: 1px solid rgba(137, 209, 255, 0.85);
+  outline-offset: 2px;
+}
+
+.liquid-glass-button.is-primary {
+  background: rgba(0, 122, 204, 0.18);
+}
+
+.liquid-glass-button.is-secondary,
+.liquid-glass-button.is-ghost {
+  background: rgba(255, 255, 255, 0.035);
+  color: #d6d6d6;
+}
+
+.liquid-glass-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #d6d6d6;
+}
+
+.liquid-glass-badge.is-primary,
+.liquid-glass-badge.is-status {
+  color: #d9f4ff;
+}
+
 .compact-button,
 .folder-open-button {
   height: 28px;
@@ -376,6 +485,7 @@ button {
   /* Welcome mode has no editor tabs, so auto-placement can put the surface in
      the small tab row. Pin it to the 1fr row so the welcome card has room. */
   grid-row: 2 / 3;
+  height: 100%;
   min-height: 0;
   overflow: auto;
   background: var(--editor);
@@ -401,6 +511,9 @@ button {
 
 .canvas-stage {
   position: relative;
+  width: calc(100% - 24px);
+  height: calc(100% - 12px);
+  min-width: 0;
   min-height: 0;
   margin: 0 12px 12px;
   border: 1px solid var(--border);
@@ -409,6 +522,11 @@ button {
 }
 
 .flow-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-stage > .react-flow {
   width: 100%;
   height: 100%;
 }
@@ -715,6 +833,13 @@ button {
   color: #8a8a8a;
 }
 
+.codex-pipeline {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
 /* Side-panel "how to start" checklist shown while the canvas empty-state owns
    the primary brief input. Uses base <ol> for native step numbering. */
 .runtime-flowlist {
@@ -907,6 +1032,28 @@ button {
 
 .form-stack span {
   color: #c6c6c6;
+}
+
+.selection-guide {
+  padding: 10px;
+  border: 1px solid #3c3c3c;
+  background: #252526;
+  color: #d6d6d6;
+  font-size: 12px;
+}
+
+.selection-guide strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #ffffff;
+}
+
+.selection-guide p,
+.field-hint {
+  margin: 0;
+  color: #9d9d9d;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .form-stack input,
@@ -1324,6 +1471,12 @@ button {
   border: 1px solid var(--border);
   background: #252526;
   font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.setup-save-error {
+  flex-basis: 100%;
+  color: #f48771;
+  line-height: 1.4;
 }
 
 .diagram-node {

@@ -16,6 +16,7 @@ import DiagramEmptyState from "./components/DiagramEmptyState";
 import DiagramNodeRenderer from "./components/DiagramNode";
 import ExplorerPanel from "./components/ExplorerPanel";
 import InspectorPanel from "./components/InspectorPanel";
+import { LiquidGlassBadge, LiquidGlassButton } from "./components/LiquidGlassControls";
 import RunPanel from "./components/RunPanel";
 import WorkspaceSetupModal from "./components/WorkspaceSetupModal";
 import {
@@ -331,7 +332,7 @@ export default function App() {
   const editorTabs = useMemo<EditorTab[]>(() => {
     const tabs = [...baseTabs];
     if (harnessConfig) {
-      tabs.push({ id: "harness", label: ".graphcoding/harness.json", kind: "harness", closeable: false });
+      tabs.push({ id: "harness", label: "App Target", kind: "harness", closeable: false });
     }
     if (result) {
       tabs.push(
@@ -1075,7 +1076,7 @@ export default function App() {
     setSuggestedPreset(config.presetId);
 
     if (workspaceMode === "native" && workspaceRootPath) {
-      await fetch("/api/workspace/write-artifacts", {
+      const response = await fetch("/api/workspace/write-artifacts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1083,21 +1084,25 @@ export default function App() {
           artifacts,
         }),
       });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "App Target files could not be written into the native workspace.");
+      }
       await reloadNativeWorkspace(workspaceRootPath);
-      setWorkspaceNotice("Harness files were written into the native workspace.");
+      setWorkspaceNotice("App Target files were written into the native workspace.");
     } else if (workspaceHandle && workspaceMode === "directory") {
       await writeArtifactsToDirectoryHandle(workspaceHandle, artifacts);
       const reloaded = await createWorkspaceFilesFromDirectoryHandle(workspaceHandle);
       setWorkspaceFiles(reloaded.files);
       setWorkspaceName(reloaded.rootName);
-      setWorkspaceNotice("Harness files were written into the workspace.");
+      setWorkspaceNotice("App Target files were written into the workspace.");
     } else {
       if (workspaceMode === "none") {
         setWorkspaceName(config.projectName);
       }
       downloadArtifacts(artifacts);
       setWorkspaceFiles((current) => mergeWorkspaceArtifacts(current, artifacts));
-      setWorkspaceNotice("Workspace is read-only in the browser, so harness files were downloaded and mirrored in the explorer.");
+      setWorkspaceNotice("Workspace is read-only in the browser, so App Target files were downloaded and mirrored in the explorer.");
     }
 
     setHarnessConfig(config);
@@ -1124,9 +1129,9 @@ export default function App() {
   const renderActiveEditor = () => {
     if (activeEditor === "harness") {
       return renderTextDocument(
-        ".graphcoding/harness.json",
+        "App Target (.graphcoding/harness.json)",
         harnessConfig ? JSON.stringify(harnessConfig, null, 2) : "No harness configured yet.",
-        harnessConfig ? "workspace setup" : undefined,
+        harnessConfig ? "Codex target" : undefined,
       );
     }
 
@@ -1180,7 +1185,7 @@ export default function App() {
         <section className="welcome-screen">
           <div className="welcome-card">
             <h1>Open a project folder to start.</h1>
-            <p>폴더를 열면 Harness를 만들고, Brief를 써서 Codex로 diagram과 코드를 생성합니다.</p>
+            <p>폴더를 열면 App Target을 고정하고, Brief를 써서 Codex로 diagram과 코드를 생성합니다.</p>
             <div className="welcome-manual-path">
               <div className="welcome-manual-path__row">
                 <input
@@ -1199,19 +1204,16 @@ export default function App() {
                   spellCheck={false}
                   autoComplete="off"
                 />
-                <button
-                  className="primary-button compact-button"
+                <LiquidGlassButton
+                  width={88}
+                  height={30}
                   onClick={() => void handleOpenFolderByPath(manualPath)}
                   disabled={workspaceOpening || !manualPath.trim()}
                 >
                   {manualPathLoading ? "Opening..." : "Open"}
-                </button>
+                </LiquidGlassButton>
               </div>
-              <button
-                className="ghost-button compact-button welcome-manual-path__native"
-                onClick={() => void handleOpenFolder()}
-                disabled={workspaceOpening}
-              >
+              <button className="ghost-button compact-button welcome-manual-path__native" onClick={() => void handleOpenFolder()} disabled={workspaceOpening}>
                 {folderDialogLoading ? "Opening native dialog..." : "또는 네이티브 대화상자로 폴더 선택"}
               </button>
               {workspaceNotice ? <p className="welcome-manual-path__notice">{workspaceNotice}</p> : null}
@@ -1237,9 +1239,9 @@ export default function App() {
               <span className="editor-chip">{selectedNodes.length} selected</span>
             ) : null}
             {!isEmptyCanvas ? (
-              <button className="ghost-button compact-button" onClick={() => flow.fitView({ duration: 300, padding: 0.2 })}>
+              <LiquidGlassButton tone="ghost" width={82} height={28} onClick={() => flow.fitView({ duration: 300, padding: 0.2 })}>
                 Fit View
-              </button>
+              </LiquidGlassButton>
             ) : null}
           </div>
         </div>
@@ -1281,10 +1283,12 @@ export default function App() {
       <header className="title-bar">
         <div className="title-bar__brand">Graph Coding GPT</div>
         <div className="title-bar__actions">
-          <span className="title-pill">{workspaceName}</span>
-          <span className={`title-pill ${auth?.codexAuthenticated ? "is-ready" : ""}`}>
-            {auth?.codexAuthenticated ? (auth.model && auth.model !== "Codex default" ? `${auth.model} Ready` : "Codex Ready") : "Auth Pending"}
-          </span>
+          <LiquidGlassBadge width={Math.max(118, Math.min(210, workspaceName.length * 8 + 34))} height={24}>
+            {workspaceName}
+          </LiquidGlassBadge>
+          <LiquidGlassBadge width={112} height={24} tone={auth?.codexAuthenticated ? "primary" : "status"}>
+            {auth?.codexAuthenticated ? "Codex Ready" : "Connect Codex"}
+          </LiquidGlassBadge>
         </div>
       </header>
 
@@ -1359,7 +1363,7 @@ export default function App() {
               <InspectorPanel
                 selectedNode={selectedNode}
                 selectedEdge={selectedEdge}
-                selectedNodeCount={selectedNodes.length}
+                selectedCount={selectedNodes.length + selectedEdges.length}
                 onNodeFieldChange={updateNodeField}
                 onEdgeFieldChange={updateEdgeField}
               />
@@ -1398,7 +1402,7 @@ export default function App() {
         <div className="status-bar__left">
           <span>main</span>
           <span>{workspaceName}</span>
-          <span>{harnessConfig ? harnessConfig.presetId : "no-harness"}</span>
+          <span>{harnessConfig ? harnessConfig.presetId : "no-target"}</span>
           <span>{nodes.length} nodes</span>
           <span>{edges.length} edges</span>
         </div>

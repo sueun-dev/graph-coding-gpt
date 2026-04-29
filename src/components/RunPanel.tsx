@@ -1,5 +1,6 @@
 import type { ChangeEvent } from "react";
 import type { DiagramDocument, DiagramGenerationResponse, SpecResponse } from "../lib/types";
+import { LiquidGlassBadge, LiquidGlassButton } from "./LiquidGlassControls";
 
 type AuthStatus = {
   codexInstalled: boolean;
@@ -45,11 +46,11 @@ export default function RunPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">STEP 1</p>
-          <h2>Generate Diagram</h2>
+          <h2>Codex Plan</h2>
         </div>
-        <span className={`runtime-status ${auth?.codexAuthenticated ? "ok" : "warn"}`}>
+        <LiquidGlassBadge width={128} height={24} tone={auth?.codexAuthenticated ? "primary" : "status"}>
           {auth?.codexAuthenticated ? "Codex Ready" : "Auth Check Needed"}
-        </span>
+        </LiquidGlassBadge>
       </div>
 
       {hasDiagram ? (
@@ -58,7 +59,7 @@ export default function RunPanel({
            once a diagram exists. */
         <div className="runtime-card">
           <h3>1. Refine Diagram</h3>
-          <p>추가로 원하는 점을 적으면 기존 diagram에 덧붙여 노드/관계선을 더합니다.</p>
+          <p>추가로 원하는 점을 적으면 Codex가 기존 diagram에 노드/관계선을 보강합니다.</p>
           <textarea
             className="runtime-textarea"
             value={brief}
@@ -67,9 +68,9 @@ export default function RunPanel({
             placeholder="예: 결제 화면을 추가하고 Stripe 연동 노드를 넣어줘."
           />
           <div className="button-row">
-            <button className="primary-button" onClick={() => onGenerateDiagram("augment")} disabled={diagramLoading}>
+            <LiquidGlassButton width={146} height={34} onClick={() => onGenerateDiagram("augment")} disabled={diagramLoading}>
               Refine Diagram
-            </button>
+            </LiquidGlassButton>
           </div>
           <p className="runtime-hint">
             처음부터 다시 만들려면 좌측 EXPLORER의 <strong>Reset</strong>으로 지운 뒤 실행하세요.
@@ -166,7 +167,7 @@ export default function RunPanel({
         <div className="runtime-card runtime-card--cta">
           <h3>2. 다음 단계</h3>
           <p>
-            노드를 다 편집했으면 오른쪽 <strong>3. BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 노드 단위로 코드 + 테스트를 실제로 작성합니다.
+            노드를 다 편집했으면 오른쪽 <strong>3. BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 계획, 패치, 테스트를 노드 단위로 실행합니다.
           </p>
         </div>
       ) : null}
@@ -180,12 +181,12 @@ export default function RunPanel({
           </p>
           <p>현재 범위: <strong>{scopeLabel}</strong></p>
           <div className="button-row">
-            <button className="primary-button" onClick={() => onGenerate("selection")} disabled={loading || !hasDiagram}>
+            <LiquidGlassButton width={132} height={34} onClick={() => onGenerate("selection")} disabled={loading || !hasDiagram}>
               Selection Spec
-            </button>
-            <button className="secondary-button" onClick={() => onGenerate("full")} disabled={loading || !hasDiagram}>
+            </LiquidGlassButton>
+            <LiquidGlassButton tone="secondary" width={106} height={34} onClick={() => onGenerate("full")} disabled={loading || !hasDiagram}>
               Full Spec
-            </button>
+            </LiquidGlassButton>
           </div>
           {loading && <p className="runtime-hint">Codex에 도식화와 범위를 전달해 스펙 문서를 만들고 있습니다.</p>}
           {error && <p className="result-warning">{error}</p>}

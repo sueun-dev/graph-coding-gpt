@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { SHAPE_LIBRARY } from "../lib/diagram";
 import { getHarnessPreset } from "../lib/harness";
 import type { EditorTab, HarnessConfig, ShapeType, WorkspaceFile, WorkspaceTreeNode } from "../lib/types";
+import { LiquidGlassButton } from "./LiquidGlassControls";
 
 type ExplorerPanelProps = {
   workspaceName: string;
@@ -25,7 +26,7 @@ type TreeItemProps = {
 };
 
 function TreeItem({ node, depth, activeEditor, onSelectFile }: TreeItemProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(() => !node.name.startsWith("."));
   const paddingLeft = 12 + depth * 14;
 
   if (node.kind === "folder") {
@@ -79,7 +80,7 @@ export default function ExplorerPanel({
       <aside className="explorer-panel">
         <div className="sidebar-section">
           <span className="sidebar-heading">Explorer</span>
-          <p className="sidebar-empty">폴더를 열면 파일/Harness/블록 팔레트가 여기 표시됩니다.</p>
+          <p className="sidebar-empty">폴더를 열면 파일, App Target, Architecture Blocks가 여기 표시됩니다.</p>
         </div>
       </aside>
     );
@@ -90,9 +91,9 @@ export default function ExplorerPanel({
       <div className="sidebar-section">
         <div className="sidebar-title-row">
           <span className="sidebar-heading">Explorer</span>
-          <button className="secondary-button compact-button" onClick={onResetDiagram} title="Reset Diagram">
+          <LiquidGlassButton tone="secondary" width={66} height={28} onClick={onResetDiagram} title="Reset Diagram">
             Reset
-          </button>
+          </LiquidGlassButton>
         </div>
         {openEditors.length > 0 ? (
           <>
@@ -122,11 +123,11 @@ export default function ExplorerPanel({
       </div>
 
       <div className="sidebar-section">
-        <div className="sidebar-subheading">HARNESS</div>
+        <div className="sidebar-subheading">APP TARGET</div>
         <div className="workspace-actions">
-          <button className="primary-button compact-button" onClick={onOpenSetup}>
-            {harnessConfig ? "Edit Harness" : "Create Harness"}
-          </button>
+          <LiquidGlassButton width={112} height={30} onClick={onOpenSetup}>
+            {harnessConfig ? "Edit Target" : "Create Target"}
+          </LiquidGlassButton>
         </div>
         {harnessConfig ? (
           <div className="harness-brief">
@@ -135,12 +136,12 @@ export default function ExplorerPanel({
             <span>{harnessConfig.agent.sandbox}</span>
           </div>
         ) : (
-          <p className="sidebar-empty">Harness를 먼저 만들면 diagram/spec/build가 더 안정적으로 고정됩니다.</p>
+          <p className="sidebar-empty">App Target을 먼저 만들면 Codex가 프레임워크, 테스트, sandbox를 고정해서 빌드합니다.</p>
         )}
       </div>
 
       <div className="sidebar-section">
-        <div className="sidebar-subheading">DIAGRAM BLOCKS</div>
+        <div className="sidebar-subheading">ARCHITECTURE BLOCKS</div>
         <div className="block-list">
           {SHAPE_LIBRARY.map((shape) => (
             <button key={shape.type} className="block-item" onClick={() => onAddNode(shape.type)}>

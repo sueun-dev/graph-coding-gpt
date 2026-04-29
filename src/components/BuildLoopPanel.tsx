@@ -1,4 +1,5 @@
 import type { BuildLoopState, DiagramDocument, NodeBuildStatus } from "../lib/types";
+import { LiquidGlassBadge, LiquidGlassButton } from "./LiquidGlassControls";
 
 type BuildLoopPanelProps = {
   diagram: DiagramDocument;
@@ -40,29 +41,35 @@ export default function BuildLoopPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">STEP 3</p>
-          <h2>Build App</h2>
+          <h2>Codex Build</h2>
         </div>
-        <span className={`runtime-status ${running ? "warn" : canRun ? "ok" : ""}`}>
+        <LiquidGlassBadge width={82} height={24} tone={canRun && !running ? "primary" : "status"}>
           {running ? "Running" : canRun ? "Ready" : "Blocked"}
-        </span>
+        </LiquidGlassBadge>
       </div>
 
       <div className="runtime-card">
         <p>
-          확정된 다이어그램을 순서대로 한 노드씩 돌면서 <strong>구현 + 테스트 작성 + 실행</strong> 합니다. 실패하면 자동으로 최대 3회까지 수정 재시도.
+          확정된 다이어그램을 순서대로 한 노드씩 돌면서 <strong>계획 + 패치 + 테스트 + 검증</strong>을 실행합니다. 실패하면 자동으로 최대 3회까지 수정 재시도.
         </p>
+        <div className="codex-pipeline" aria-label="Codex build pipeline">
+          <LiquidGlassBadge width="100%" height={30}>Plan</LiquidGlassBadge>
+          <LiquidGlassBadge width="100%" height={30}>Patch</LiquidGlassBadge>
+          <LiquidGlassBadge width="100%" height={30}>Test</LiquidGlassBadge>
+          <LiquidGlassBadge width="100%" height={30}>Verify</LiquidGlassBadge>
+        </div>
         {!canRun ? <p className="result-warning">{blockedReason}</p> : null}
         <div className="button-row">
-          <button className="primary-button" onClick={onStart} disabled={!canRun || running}>
+          <LiquidGlassButton width={hasOrder ? 150 : 164} height={34} onClick={onStart} disabled={!canRun || running}>
             {running ? "Running..." : hasOrder ? "Continue Build" : "Start Build Loop"}
-          </button>
-          <button className="secondary-button" onClick={onStop} disabled={!running}>
+          </LiquidGlassButton>
+          <LiquidGlassButton tone="secondary" width={76} height={34} onClick={onStop} disabled={!running}>
             Stop
-          </button>
+          </LiquidGlassButton>
           {hasOrder ? (
-            <button className="secondary-button" onClick={onReset} disabled={running}>
+            <LiquidGlassButton tone="secondary" width={82} height={34} onClick={onReset} disabled={running}>
               Reset
-            </button>
+            </LiquidGlassButton>
           ) : null}
         </div>
         {hasOrder ? (

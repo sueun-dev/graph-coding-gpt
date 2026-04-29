@@ -1,4 +1,5 @@
 import type { ChangeEvent, KeyboardEvent } from "react";
+import { LiquidGlassButton } from "./LiquidGlassControls";
 
 type DiagramEmptyStateProps = {
   brief: string;
@@ -54,7 +55,7 @@ export default function DiagramEmptyState({
       <h1 className="diagram-empty__title">무엇을 만들까요?</h1>
       <p className="diagram-empty__subtitle">
         한 문장이면 됩니다. Codex가 노드와 관계선을 그려주면, 이어서 캔버스에서 직접 편집하고 마지막에
-        Build Loop이 노드 단위로 코드 + 테스트를 작성합니다.
+        Build Loop이 노드 단위로 계획, 패치, 테스트를 실행합니다.
       </p>
 
       <label className="diagram-empty__field">
@@ -72,9 +73,9 @@ export default function DiagramEmptyState({
       </label>
 
       <div className="diagram-empty__cta-row">
-        <button className="diagram-empty__cta" onClick={onGenerate} disabled={!canGenerate}>
+        <LiquidGlassButton width={178} height={42} onClick={onGenerate} disabled={!canGenerate}>
           {loading ? "Codex가 도식화 중…" : "Generate Diagram"}
-        </button>
+        </LiquidGlassButton>
         <span className="diagram-empty__shortcut">⌘/Ctrl + Enter</span>
       </div>
 

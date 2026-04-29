@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { HARNESS_PRESETS, cloneHarnessConfig, createHarnessFromPreset, getHarnessPreset } from "../lib/harness";
 import type { HarnessConfig, HarnessDesign, HarnessPresetId } from "../lib/types";
+import { LiquidGlassButton } from "./LiquidGlassControls";
 
 const FALLBACK_DESIGN: HarnessDesign = {
   theme: "dark",
@@ -60,6 +61,7 @@ export default function WorkspaceSetupModal({
     ensureDesign(existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace")),
   );
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     if (!open) {
@@ -67,6 +69,7 @@ export default function WorkspaceSetupModal({
     }
 
     setStep("preset");
+    setSaveError("");
     setConfig(ensureDesign(existingConfig ? cloneHarnessConfig(existingConfig) : createHarnessFromPreset(initialPreset, workspaceName || "New Workspace")));
   }, [existingConfig, initialPreset, open, workspaceName]);
 
@@ -160,9 +163,12 @@ export default function WorkspaceSetupModal({
 
   const save = async () => {
     setSaving(true);
+    setSaveError("");
     try {
       await onSave(config);
       onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "App Target files could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -175,9 +181,9 @@ export default function WorkspaceSetupModal({
         <div className="setup-modal__header">
           <div>
             <span className="editor-view__eyebrow">Workspace Setup</span>
-            <h2>{workspaceName || "New Workspace"} Harness</h2>
+            <h2>{workspaceName || "New Workspace"} App Target</h2>
             <p className="setup-copy">
-              처음부터 프레임워크, 도구, 테스트 정책, sandbox를 고정해 두면 이후 도식화 생성과 빌드 프롬프트가 훨씬 안정적입니다.
+              처음부터 프레임워크, 도구, 테스트 정책, sandbox를 고정해 두면 Codex가 같은 기준으로 계획, 패치, 검증합니다.
             </p>
           </div>
           <div className="setup-modal__header-meta">
@@ -450,30 +456,31 @@ export default function WorkspaceSetupModal({
 
         <div className="setup-modal__footer">
           <div className="setup-footer-copy">
-            Harness files to save:
+            Target files to save:
             <code>.graphcoding/harness.json</code>
             <code>.graphcoding/project-profile.md</code>
             <code>.graphcoding/build-policy.json</code>
             <code>.graphcoding/design-tokens.json</code>
+            {saveError ? <span className="setup-save-error">{saveError}</span> : null}
           </div>
           <div className="setup-footer-actions">
-            <button className="ghost-button compact-button" onClick={onClose}>
+            <LiquidGlassButton tone="ghost" width={82} height={30} onClick={onClose}>
               Cancel
-            </button>
+            </LiquidGlassButton>
             {step === "preset" && (
-              <button className="primary-button compact-button" onClick={() => setStep("advanced")}>
+              <LiquidGlassButton width={72} height={30} onClick={() => setStep("advanced")}>
                 Next
-              </button>
+              </LiquidGlassButton>
             )}
             {step === "advanced" && (
-              <button className="primary-button compact-button" onClick={() => setStep("design")}>
+              <LiquidGlassButton width={72} height={30} onClick={() => setStep("design")}>
                 Next
-              </button>
+              </LiquidGlassButton>
             )}
             {step === "design" && (
-              <button className="primary-button compact-button" onClick={save} disabled={saving}>
-                {saving ? "Saving..." : "Save Harness"}
-              </button>
+              <LiquidGlassButton width={122} height={30} onClick={save} disabled={saving}>
+                {saving ? "Saving..." : "Save Target"}
+              </LiquidGlassButton>
             )}
           </div>
         </div>
