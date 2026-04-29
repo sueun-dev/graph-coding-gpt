@@ -4,6 +4,7 @@ import os from "os";
 import { promises as fs } from "fs";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
+import { createHash } from "crypto";
 
 const app = express();
 // Port 8791 instead of the common 8787 to avoid collision with sibling dev
@@ -50,6 +51,15 @@ const TEXT_ISOLATION_SKIP_DIRS = new Set([
 ]);
 const HOST_PATH_PATTERN = /(?:~\/|\/Users\/|\/Volumes\/|\/private\/|\/tmp\/|\/var\/folders\/)[^\s"'`),}\]]*/g;
 const MAX_ISOLATION_ISSUES = 40;
+const INSTALL_STATE_RELPATH = ".graphcoding/install-state.json";
+
+const pathExists = async (candidatePath) => fs.access(candidatePath).then(() => true).catch(() => false);
+const buildAbortError = () => new Error("Build node request was cancelled.");
+const throwIfAborted = (signal) => {
+  if (signal?.aborted) {
+    throw buildAbortError();
+  }
+};
 
 const workspaceRuntimeEnv = (cwd) => {
   const cacheRoot = path.join(cwd, ".graphcoding", "cache");
@@ -2200,12 +2210,12 @@ const buildNodePrompt = ({ node, harness, previouslyBuilt, previousTestFailure, 
     ? `
 Bootstrap requirements (first node only):
 - Scaffold package.json with the correct packageManager (harness.stack.packageManager). Include "type": "module".
-- Install vitest@^2, @types/node, typescript, jsdom as devDependencies.
+- Add vitest@^2, @types/node, typescript, jsdom as devDependencies.
 - Create tsconfig.json: target ES2022, module Bundler, moduleResolution Bundler, jsx react-jsx, strict true, include [src, tests].
 - Create vitest.config.ts with environment "jsdom" and include ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts", "src/**/*.test.tsx"].
 - Create the empty tests/ directory; every subsequent node adds its own subfolder.
 - If harness.stack.frontend uses Tailwind: create tailwind.config.ts and src/globals.css wiring the six palette vars and typography.
-- Run the package manager's install command once so node_modules is ready for later nodes' tests. Use the configured package manager, not npx.
+- Do not run the package manager's install command. The build loop installs dependencies from package.json after your patch.
 `.trim()
     : `
 The workspace is already scaffolded by prior nodes. Do NOT re-initialize package.json, tsconfig, or vitest config. Only add the files this node needs.`.trim();
@@ -2253,10 +2263,13 @@ Workspace and dependency rules:
   or searches outside \`.\`. Use \`pwd\`, \`ls\`, \`cat package.json\`, and \`rg\` inside
   \`.\` only.
 - Never manually create, edit, or commit files under node_modules. Never create
-  local shims for third-party packages. If a dependency is missing, install it
-  with the configured package manager and report a real failure if install fails.
-- For pnpm projects, prefer \`pnpm install\`, \`pnpm exec vitest run\`, and
-  \`pnpm exec tsc --noEmit\`. If local binaries exist, direct local commands such
+  local shims for third-party packages. If a dependency is missing, add it to
+  package.json; the build loop installs from that manifest before tests.
+- Do not run \`npm install\`, \`pnpm install\`, \`yarn install\`, or any package
+  install command yourself. Installs are owned by the build loop after the
+  diagram-driven package.json is written.
+- For pnpm projects, prefer \`pnpm exec vitest run\` and
+  \`pnpm exec tsc --noEmit\` after dependencies exist. If local binaries exist, direct local commands such
   as \`./node_modules/.bin/vitest run\` are OK.
 - Do not use \`npx\`, \`npm exec\`, or package commands that download ad-hoc tools
   during verification.
@@ -2281,10 +2294,12 @@ Work rules for this node:
 2. Write comprehensive tests in tests/${nodeSlug}/*.test.ts covering every
    branch implied by behavior, inputs, outputs, and testHint. Use vitest.
    Test BOTH the happy path AND at least one edge case.
-3. Run the whole workspace's vitest suite and make sure it is green before
-   finishing. Do not finish on red.
-4. Run the local TypeScript checker (\`pnpm exec tsc --noEmit\` or
-   \`./node_modules/.bin/tsc --noEmit\`) and make sure it is green before finishing.
+3. If local dependencies already exist, run the workspace's vitest suite and
+   make sure it is green before finishing. If dependencies are not installed
+   yet, do not install them; the build loop will install and run the suite.
+4. If local dependencies already exist, run the local TypeScript checker
+   (\`pnpm exec tsc --noEmit\` or \`./node_modules/.bin/tsc --noEmit\`) and make
+   sure it is green before finishing.
 5. Do NOT delete or edit files created by prior nodes unless the current node's
    behavior explicitly requires it. If you must edit a prior file, keep the
    change minimal and additive (export new symbols, do not change existing
@@ -2304,9 +2319,10 @@ Start now.
 `.trim();
 };
 
-const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 900000 }) => {
+const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 900000, signal }) => {
   await ensureRuntimeDirs();
   await ensureWorkspaceRuntimeDirs(cwd);
+  throwIfAborted(signal);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const shortId = String(nodeId || "x").slice(0, 8);
   const promptPath = path.join(GENERATED_DIR, `node-${shortId}-attempt${attempt}-prompt-${stamp}.md`);
@@ -2332,20 +2348,43 @@ const runCodexForNode = async ({ prompt, cwd, nodeId, attempt, timeoutMs = 90000
     const child = spawn("codex", args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: workspaceRuntimeEnv(cwd) });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => {
+    let settled = false;
+    let forceKillTimer = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      signal?.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+    const terminate = () => {
       child.kill("SIGTERM");
-      reject(new Error(`Codex node build timed out after ${Math.round(timeoutMs / 1000)}s`));
+      forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
+      forceKillTimer.unref?.();
+    };
+    const onAbort = () => {
+      terminate();
+      settle(reject, buildAbortError());
+    };
+    const timer = setTimeout(() => {
+      terminate();
+      settle(reject, new Error(`Codex node build timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (c) => { stdout += c.toString(); });
     child.stderr.on("data", (c) => { stderr += c.toString(); });
-    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("error", (err) => { settle(reject, err); });
     child.on("close", (code) => {
-      clearTimeout(timer);
       if (code !== 0) {
-        reject(new Error(`Codex exited with code ${code}: ${stderr || stdout}`));
+        settle(reject, new Error(`Codex exited with code ${code}: ${stderr || stdout}`));
         return;
       }
-      resolve([stdout.trim(), stderr.trim() ? `\n[stderr]\n${stderr.trim()}` : ""].filter(Boolean).join("\n").trim());
+      settle(resolve, [stdout.trim(), stderr.trim() ? `\n[stderr]\n${stderr.trim()}` : ""].filter(Boolean).join("\n").trim());
     });
     child.stdin.write(prompt);
     child.stdin.end();
@@ -2369,16 +2408,20 @@ const detectTestRunner = async (cwd) => {
   });
   try {
     const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+    if (typeof pkg.scripts?.test === "string" && pkg.scripts.test.trim()) {
+      const packageManager = normalizePackageManager(pkg.packageManager || await detectPackageManagerName(cwd));
+      return { ...packageManagerRunScriptCommand(packageManager, "test"), env: { CI: "true" } };
+    }
     const wantsVitest = /vitest/.test(pkg.scripts?.test || "") || pkg.devDependencies?.vitest || pkg.dependencies?.vitest;
     const wantsJest = !wantsVitest && (pkg.devDependencies?.jest || pkg.dependencies?.jest);
     if (wantsVitest && await hasLocal(localVitest)) {
-      return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
+      return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"], env: { CI: "true" } };
     }
     if (wantsVitest && await hasLocal(localVitestMjs)) {
-      return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"] };
+      return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"], env: { CI: "true" } };
     }
     if (wantsJest && await hasLocal(localJest)) {
-      return { cmd: localJest, args: ["--color=false"] };
+      return { cmd: localJest, args: ["--color=false"], env: { CI: "true" } };
     }
     if (wantsVitest) {
       return missing("vitest");
@@ -2390,15 +2433,13 @@ const detectTestRunner = async (cwd) => {
     console.warn(`[detectTestRunner] could not read ${cwd}/package.json: ${err?.message || err}`);
   }
   if (await hasLocal(localVitest)) {
-    return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"] };
+    return { cmd: localVitest, args: ["run", "--reporter=verbose", "--no-color"], env: { CI: "true" } };
   }
   if (await hasLocal(localVitestMjs)) {
-    return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"] };
+    return { cmd: process.execPath, args: [localVitestMjs, "run", "--reporter=verbose", "--no-color"], env: { CI: "true" } };
   }
   return missing("vitest");
 };
-
-const pathExists = async (candidatePath) => fs.access(candidatePath).then(() => true).catch(() => false);
 
 const preflightBuildWorkspace = async (cwd) => {
   const isolation = await validateWorkspaceIsolation(cwd);
@@ -2409,49 +2450,13 @@ const preflightBuildWorkspace = async (cwd) => {
     };
   }
 
-  let pkg;
   try {
-    pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+    JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
   } catch (err) {
     if (err?.code === "ENOENT") {
       return { ok: true };
     }
     return { ok: false, error: `Build preflight failed: package.json is not valid JSON (${err?.message || err}).` };
-  }
-
-  const scripts = pkg.scripts || {};
-  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-  const wantsVitest = /vitest/.test(scripts.test || "") || !!deps.vitest;
-  const wantsJest = !wantsVitest && !!deps.jest;
-  const wantsTypecheck = /(^|\s)tsc(\s|$)/.test(Object.values(scripts).join(" ")) || !!deps.typescript;
-
-  if (wantsVitest) {
-    const hasVitest = await pathExists(path.join(cwd, "node_modules", ".bin", "vitest"))
-      || await pathExists(path.join(cwd, "node_modules", "vitest", "vitest.mjs"));
-    if (!hasVitest) {
-      return {
-        ok: false,
-        error: "Build preflight failed: local vitest is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
-      };
-    }
-  }
-
-  if (wantsJest && !(await pathExists(path.join(cwd, "node_modules", ".bin", "jest")))) {
-    return {
-      ok: false,
-      error: "Build preflight failed: local jest is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
-    };
-  }
-
-  if (wantsTypecheck) {
-    const hasTsc = await pathExists(path.join(cwd, "node_modules", ".bin", "tsc"))
-      || await pathExists(path.join(cwd, "node_modules", "typescript", "lib", "tsc.js"));
-    if (!hasTsc) {
-      return {
-        ok: false,
-        error: "Build preflight failed: local TypeScript is missing. Install dependencies inside this workspace before Start Build Loop; external node_modules are not allowed.",
-      };
-    }
   }
 
   return { ok: true };
@@ -2476,35 +2481,280 @@ const extractFailureLines = (text) => {
   return failures.slice(0, 12);
 };
 
-const runNodeTests = async ({ cwd, timeoutMs = 300000 }) => {
+const runWorkspaceCommand = async ({ cwd, cmd, args, timeoutMs = 300000, env = {}, signal }) => {
   await ensureWorkspaceRuntimeDirs(cwd);
-  const { cmd, args } = await detectTestRunner(cwd);
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: workspaceRuntimeEnv(cwd) });
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...workspaceRuntimeEnv(cwd), ...env },
+    });
     let stdout = "";
     let stderr = "";
     let killed = false;
-    const timer = setTimeout(() => {
+    let settled = false;
+    let forceKillTimer = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      signal?.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+    const terminate = () => {
       killed = true;
       child.kill("SIGTERM");
+      forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
+      forceKillTimer.unref?.();
+    };
+    const onAbort = () => {
+      terminate();
+      settle(reject, buildAbortError());
+    };
+    const timer = setTimeout(() => {
+      terminate();
     }, timeoutMs);
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (c) => { stdout += c.toString(); });
     child.stderr.on("data", (c) => { stderr += c.toString(); });
     child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ passed: false, failures: [`Test runner failed to start: ${err.message}`], stdout, stderr });
+      settle(resolve, { passed: false, code: null, killed, stdout, stderr: `${stderr}\n${err.message}`.trim() });
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (killed) {
-        resolve({ passed: false, failures: [`Tests timed out after ${Math.round(timeoutMs / 1000)}s`], stdout, stderr });
-        return;
-      }
-      const passed = code === 0;
-      const failures = passed ? [] : extractFailureLines(`${stdout}\n${stderr}`);
-      resolve({ passed, failures, stdout, stderr });
+      settle(resolve, { passed: code === 0 && !killed, code, killed, stdout, stderr });
     });
   });
+};
+
+const normalizePackageManager = (raw) => {
+  const value = String(raw || "").toLowerCase().trim();
+  const name = value.split("@")[0];
+  if (name.includes("pnpm")) return "pnpm";
+  if (name.includes("yarn")) return "yarn";
+  if (name.includes("bun")) return "bun";
+  return "npm";
+};
+
+const packageManagerInstallCommand = (packageManager) => {
+  switch (packageManager) {
+    case "pnpm":
+      return { cmd: "corepack", args: ["pnpm", "install"] };
+    case "yarn":
+      return { cmd: "corepack", args: ["yarn", "install"] };
+    case "bun":
+      return { cmd: "bun", args: ["install"] };
+    case "npm":
+    default:
+      return { cmd: "npm", args: ["install", "--no-audit", "--no-fund"] };
+  }
+};
+
+const packageManagerRunScriptCommand = (packageManager, scriptName) => {
+  switch (packageManager) {
+    case "pnpm":
+      return { cmd: "corepack", args: ["pnpm", "run", scriptName] };
+    case "yarn":
+      return { cmd: "corepack", args: ["yarn", "run", scriptName] };
+    case "bun":
+      return { cmd: "bun", args: ["run", scriptName] };
+    case "npm":
+    default:
+      return { cmd: "npm", args: ["run", scriptName] };
+  }
+};
+
+const packageInstallFingerprint = (pkg) => createHash("sha256").update(JSON.stringify({
+  packageManager: pkg.packageManager,
+  dependencies: pkg.dependencies || {},
+  devDependencies: pkg.devDependencies || {},
+  optionalDependencies: pkg.optionalDependencies || {},
+  peerDependencies: pkg.peerDependencies || {},
+})).digest("hex");
+
+const hasPackageDependencies = (pkg) => [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+].some((field) => pkg[field] && Object.keys(pkg[field]).length > 0);
+
+const syncWorkspaceDependencies = async ({ cwd, harness, timeoutMs = 300000, signal }) => {
+  throwIfAborted(signal);
+  const packagePath = path.join(cwd, "package.json");
+  let pkg;
+  try {
+    pkg = JSON.parse(await fs.readFile(packagePath, "utf8"));
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return { passed: true, skipped: true, reason: "no-package-json", stdout: "", stderr: "", failures: [] };
+    }
+    return {
+      passed: false,
+      skipped: false,
+      stdout: "",
+      stderr: String(err?.message || err),
+      failures: [`Dependency sync failed: package.json is not valid JSON (${err?.message || err}).`],
+    };
+  }
+
+  if (!hasPackageDependencies(pkg)) {
+    return { passed: true, skipped: true, reason: "no-dependencies", stdout: "", stderr: "", failures: [] };
+  }
+
+  const packageManager = normalizePackageManager(pkg.packageManager || harness?.stack?.packageManager);
+  const fingerprint = packageInstallFingerprint(pkg);
+  const statePath = path.join(cwd, INSTALL_STATE_RELPATH);
+  const nodeModulesReady = await pathExists(path.join(cwd, "node_modules"));
+  let previousState = null;
+  try {
+    previousState = JSON.parse(await fs.readFile(statePath, "utf8"));
+  } catch {
+    // Missing or corrupt install state just means the next build should sync.
+  }
+
+  if (nodeModulesReady && previousState?.fingerprint === fingerprint && previousState?.packageManager === packageManager) {
+    return { passed: true, skipped: true, reason: "up-to-date", stdout: "", stderr: "", failures: [] };
+  }
+
+  const { cmd, args } = packageManagerInstallCommand(packageManager);
+  const result = await runWorkspaceCommand({
+    cwd,
+    cmd,
+    args,
+    timeoutMs,
+    signal,
+    env: {
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_fetch_retries: "1",
+      npm_config_fetch_retry_mintimeout: "1000",
+      npm_config_fetch_retry_maxtimeout: "10000",
+      NPM_CONFIG_AUDIT: "false",
+      NPM_CONFIG_FUND: "false",
+      NPM_CONFIG_FETCH_RETRIES: "1",
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "10000",
+    },
+  });
+
+  if (!result.passed) {
+    const status = result.killed ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `exited with code ${result.code}`;
+    const failures = extractFailureLines(`${result.stdout}\n${result.stderr}`);
+    return {
+      passed: false,
+      skipped: false,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      failures: [
+        `Dependency install failed: ${cmd} ${args.join(" ")} ${status}.`,
+        ...failures,
+      ],
+    };
+  }
+
+  await fs.writeFile(statePath, JSON.stringify({
+    fingerprint,
+    packageManager,
+    command: [cmd, ...args].join(" "),
+    installedAt: new Date().toISOString(),
+  }, null, 2));
+
+  return { passed: true, skipped: false, reason: "installed", stdout: result.stdout, stderr: result.stderr, failures: [] };
+};
+
+const runNodeTests = async ({ cwd, timeoutMs = 300000, signal }) => {
+  await ensureWorkspaceRuntimeDirs(cwd);
+  throwIfAborted(signal);
+  const { cmd, args, env } = await detectTestRunner(cwd);
+  console.info(`[runNodeTests] ${cmd} ${args.join(" ")}`);
+  const result = await runWorkspaceCommand({ cwd, cmd, args, timeoutMs, signal, env });
+  console.info(`[runNodeTests] exit=${result.code} killed=${result.killed}`);
+  if (result.killed) {
+    return {
+      passed: false,
+      failures: [`Tests timed out after ${Math.round(timeoutMs / 1000)}s`],
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  }
+  const failures = result.passed ? [] : extractFailureLines(`${result.stdout}\n${result.stderr}`);
+  if (!result.passed && failures.length === 0) {
+    failures.push(`Tests failed with exit code ${result.code}.`);
+  }
+  return { passed: result.passed, failures, stdout: result.stdout, stderr: result.stderr };
+};
+
+const detectTypecheckRunner = async (cwd) => {
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(cwd, "package.json"), "utf8"));
+    if (typeof pkg.scripts?.typecheck === "string" && pkg.scripts.typecheck.trim()) {
+      const packageManager = normalizePackageManager(pkg.packageManager || await detectPackageManagerName(cwd));
+      return { ...packageManagerRunScriptCommand(packageManager, "typecheck"), env: { CI: "true" } };
+    }
+  } catch {
+    // Fall back to local tsc below.
+  }
+
+  const localTsc = path.join(cwd, "node_modules", ".bin", "tsc");
+  const localTscJs = path.join(cwd, "node_modules", "typescript", "lib", "tsc.js");
+  if (await pathExists(localTsc)) {
+    return { cmd: localTsc, args: ["--noEmit"] };
+  }
+  if (await pathExists(localTscJs)) {
+    return { cmd: process.execPath, args: [localTscJs, "--noEmit"] };
+  }
+  return {
+    cmd: process.execPath,
+    args: [
+      "-e",
+      `console.error(${JSON.stringify("Local TypeScript is missing. Install dependencies inside this workspace; do not use external node_modules.")}); process.exit(1);`,
+    ],
+  };
+};
+
+const runNodeTypecheck = async ({ cwd, timeoutMs = 300000, signal }) => {
+  await ensureWorkspaceRuntimeDirs(cwd);
+  throwIfAborted(signal);
+  const { cmd, args, env } = await detectTypecheckRunner(cwd);
+  const result = await runWorkspaceCommand({ cwd, cmd, args, timeoutMs, signal, env });
+  if (result.killed) {
+    return {
+      passed: false,
+      failures: [`Typecheck timed out after ${Math.round(timeoutMs / 1000)}s`],
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  }
+  const failures = result.passed ? [] : extractFailureLines(`${result.stdout}\n${result.stderr}`);
+  if (!result.passed && failures.length === 0) {
+    failures.push(`Typecheck failed with exit code ${result.code}.`);
+  }
+  return { passed: result.passed, failures, stdout: result.stdout, stderr: result.stderr };
+};
+
+const mergeCheckResults = (tests, typecheck) => {
+  if (!typecheck) return tests;
+  return {
+    passed: tests.passed && typecheck.passed,
+    failures: [
+      ...tests.failures,
+      ...typecheck.failures.map((failure) => `Typecheck: ${failure}`),
+    ],
+    stdout: [
+      tests.stdout,
+      typecheck.stdout ? `\n[typecheck stdout]\n${typecheck.stdout}` : "",
+    ].filter(Boolean).join("\n"),
+    stderr: [
+      tests.stderr,
+      typecheck.stderr ? `\n[typecheck stderr]\n${typecheck.stderr}` : "",
+    ].filter(Boolean).join("\n"),
+  };
 };
 
 const listWorkspaceFiles = async (cwd) => {
@@ -2788,6 +3038,12 @@ app.post("/api/ai/build-order", (req, res) => {
 app.post("/api/ai/build-node", async (req, res) => {
   const { rootPath, diagram: rawDiagram, harness, nodeId, previouslyBuilt, isFirst, maxRetries } = req.body ?? {};
   const retries = Number.isInteger(maxRetries) ? Math.max(0, Math.min(5, maxRetries)) : 3;
+  const abortController = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
 
   if (typeof rootPath !== "string" || rootPath.trim().length === 0) {
     res.status(400).json({ ok: false, error: "rootPath is required" });
@@ -2848,19 +3104,40 @@ app.post("/api/ai/build-node", async (req, res) => {
         cwd: resolvedRoot,
         nodeId: node.id,
         attempt,
+        signal: abortController.signal,
       });
       lastOutput = run.output;
       lastPromptPath = run.promptPath;
       lastLogPath = run.logPath;
+      const isolationBeforeInstall = await validateWorkspaceIsolation(resolvedRoot);
+      if (!isolationBeforeInstall.passed) {
+        lastTestResult = isolationFailureResult(isolationBeforeInstall);
+        previousTestFailure = `${lastTestResult.failures.join("\n\n")}\n\n[stderr tail]\n${lastTestResult.stderr.slice(-2000)}`;
+        continue;
+      }
+      const dependencySync = await syncWorkspaceDependencies({ cwd: resolvedRoot, harness, signal: abortController.signal });
+      if (!dependencySync.passed) {
+        lastTestResult = {
+          passed: false,
+          failures: dependencySync.failures,
+          stdout: dependencySync.stdout,
+          stderr: dependencySync.stderr,
+        };
+        previousTestFailure = `${lastTestResult.failures.join("\n\n")}\n\n[stderr tail]\n${lastTestResult.stderr.slice(-2000)}`;
+        continue;
+      }
       const isolationBeforeTests = await validateWorkspaceIsolation(resolvedRoot);
       if (!isolationBeforeTests.passed) {
         lastTestResult = isolationFailureResult(isolationBeforeTests);
         previousTestFailure = `${lastTestResult.failures.join("\n\n")}\n\n[stderr tail]\n${lastTestResult.stderr.slice(-2000)}`;
         continue;
       }
-      const tests = await runNodeTests({ cwd: resolvedRoot });
-      lastTestResult = tests;
-      if (tests.passed) {
+      const tests = await runNodeTests({ cwd: resolvedRoot, signal: abortController.signal });
+      const typecheck = tests.passed && harness?.quality?.typecheck !== false
+        ? await runNodeTypecheck({ cwd: resolvedRoot, signal: abortController.signal })
+        : null;
+      lastTestResult = mergeCheckResults(tests, typecheck);
+      if (lastTestResult.passed) {
         const isolationAfterTests = await validateWorkspaceIsolation(resolvedRoot);
         if (isolationAfterTests.passed) break;
         lastTestResult = isolationFailureResult(isolationAfterTests);
@@ -2884,6 +3161,12 @@ app.post("/api/ai/build-node", async (req, res) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
+    if (abortController.signal.aborted) {
+      if (!res.headersSent) {
+        res.status(499).json({ ok: false, error: message });
+      }
+      return;
+    }
     res.status(500).json({ ok: false, error: message });
   }
 });

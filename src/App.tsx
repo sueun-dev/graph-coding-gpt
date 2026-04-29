@@ -121,6 +121,7 @@ export default function App() {
   const [workspaceHandle, setWorkspaceHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("none");
+  const hasWorkspace = workspaceMode !== "none" || workspaceFiles.length > 0;
   const [harnessConfig, setHarnessConfig] = useState<HarnessConfig | null>(null);
   const [suggestedPreset, setSuggestedPreset] = useState<HarnessPresetId>("agent-tool");
   const [isSetupOpen, setIsSetupOpen] = useState(false);
@@ -157,36 +158,36 @@ export default function App() {
   }, [edges, nodes]);
 
   useEffect(() => {
-    const key = `${workspaceName}:${workspaceFiles.length}`;
-    if (workspaceFiles.length > 0 && !harnessConfig && setupPromptedKeyRef.current !== key) {
+    const key = `${workspaceMode}:${workspaceRootPath ?? workspaceName}:${workspaceFiles.length}`;
+    if (hasWorkspace && !harnessConfig && setupPromptedKeyRef.current !== key) {
       setupPromptedKeyRef.current = key;
       setIsSetupOpen(true);
     }
-  }, [harnessConfig, workspaceFiles, workspaceName]);
+  }, [harnessConfig, hasWorkspace, workspaceFiles.length, workspaceMode, workspaceName, workspaceRootPath]);
 
   const diagramStorageKey = useMemo(() => {
     if (workspaceRootPath) {
       return `${DIAGRAM_STORAGE_PREFIX}:native:${workspaceRootPath}`;
     }
 
-    if (workspaceFiles.length > 0 && workspaceName !== "NO FOLDER OPENED") {
+    if (hasWorkspace && workspaceName !== "NO FOLDER OPENED") {
       return `${DIAGRAM_STORAGE_PREFIX}:workspace:${workspaceName}`;
     }
 
     return null;
-  }, [workspaceFiles.length, workspaceName, workspaceRootPath]);
+  }, [hasWorkspace, workspaceName, workspaceRootPath]);
 
   const briefStorageKey = useMemo(() => {
     if (workspaceRootPath) {
       return `${BRIEF_STORAGE_PREFIX}:native:${workspaceRootPath}`;
     }
 
-    if (workspaceFiles.length > 0 && workspaceName !== "NO FOLDER OPENED") {
+    if (hasWorkspace && workspaceName !== "NO FOLDER OPENED") {
       return `${BRIEF_STORAGE_PREFIX}:workspace:${workspaceName}`;
     }
 
     return `${BRIEF_STORAGE_PREFIX}:global`;
-  }, [workspaceFiles.length, workspaceName, workspaceRootPath]);
+  }, [hasWorkspace, workspaceName, workspaceRootPath]);
 
   useEffect(() => {
     localStorage.removeItem(LEGACY_DIAGRAM_STORAGE_KEY);
@@ -1277,7 +1278,7 @@ export default function App() {
       return renderTextDocument(activeFile.path, filePreviews[activeFile.path] ?? "Loading preview...", `${activeFile.size} bytes`);
     }
 
-    if (workspaceFiles.length === 0 && !harnessConfig) {
+    if (!hasWorkspace && !harnessConfig) {
       const workspaceOpening = manualPathLoading || folderDialogLoading;
       return (
         <section className="welcome-screen">
@@ -1378,7 +1379,6 @@ export default function App() {
     );
   };
 
-  const hasWorkspace = workspaceFiles.length > 0;
   const buildOrder = compatibleBuildLoopState?.order ?? [];
   const buildDone = buildOrder.filter((id) => compatibleBuildLoopState?.records[id]?.status === "done").length;
   const activeWorkflowStep = !hasWorkspace || !harnessConfig ? "target" : activeAuxPanel;
