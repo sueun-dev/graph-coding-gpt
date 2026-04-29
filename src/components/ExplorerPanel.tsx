@@ -79,8 +79,14 @@ export default function ExplorerPanel({
     return (
       <aside className="explorer-panel">
         <div className="sidebar-section">
-          <span className="sidebar-heading">Explorer</span>
-          <p className="sidebar-empty">폴더를 열면 파일, App Target, Architecture Blocks가 여기 표시됩니다.</p>
+          <span className="sidebar-heading">Project Setup</span>
+          <p className="sidebar-empty">폴더를 열면 Target, Blocks, Files 순서로 작업 흐름이 표시됩니다.</p>
+          <ol className="setup-mini-steps">
+            <li>Open folder</li>
+            <li>Choose Target</li>
+            <li>Generate diagram</li>
+            <li>Build app</li>
+          </ol>
         </div>
       </aside>
     );
@@ -90,40 +96,12 @@ export default function ExplorerPanel({
     <aside className="explorer-panel">
       <div className="sidebar-section">
         <div className="sidebar-title-row">
-          <span className="sidebar-heading">Explorer</span>
+          <span className="sidebar-heading">Project</span>
           <LiquidGlassButton tone="secondary" width={66} height={28} onClick={onResetDiagram} title="Reset Diagram">
             Reset
           </LiquidGlassButton>
         </div>
-        {openEditors.length > 0 ? (
-          <>
-            <div className="sidebar-subheading">OPEN EDITORS</div>
-            <div className="open-editors">
-              {openEditors.map((tab) => (
-                <button key={tab.id} className={`open-editor ${activeEditor === tab.id ? "is-active" : ""}`} onClick={() => onSelectEditor(tab.id)}>
-                  <span className="tree-icon">{tab.kind === "diagram" ? "◎" : tab.kind === "harness" ? "⚙" : "📄"}</span>
-                  <span>{tab.label}</span>
-                </button>
-              ))}
-            </div>
-          </>
-        ) : null}
-      </div>
-
-      <div className="sidebar-section">
-        <div className="sidebar-subheading">WORKSPACE</div>
         <div className="workspace-root">{workspaceName}</div>
-        <div className="tree-list">
-          {workspaceTree.length > 0 ? (
-            workspaceTree.map((node) => <TreeItem key={node.id} node={node} depth={0} activeEditor={activeEditor} onSelectFile={onSelectFile} />)
-          ) : (
-            <p className="sidebar-empty">빈 폴더입니다.</p>
-          )}
-        </div>
-      </div>
-
-      <div className="sidebar-section">
-        <div className="sidebar-subheading">APP TARGET</div>
         <div className="workspace-actions">
           <LiquidGlassButton width={112} height={30} onClick={onOpenSetup}>
             {harnessConfig ? "Edit Target" : "Create Target"}
@@ -136,7 +114,7 @@ export default function ExplorerPanel({
             <span>{harnessConfig.agent.sandbox}</span>
           </div>
         ) : (
-          <p className="sidebar-empty">App Target을 먼저 만들면 Codex가 프레임워크, 테스트, sandbox를 고정해서 빌드합니다.</p>
+          <p className="sidebar-empty">먼저 Target을 정하면 Codex가 프레임워크, 테스트, sandbox 기준을 고정합니다.</p>
         )}
       </div>
 
@@ -153,6 +131,30 @@ export default function ExplorerPanel({
               <span className="block-add">+</span>
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="sidebar-section">
+        {openEditors.length > 0 ? (
+          <>
+            <div className="sidebar-subheading">ACTIVE DOCS</div>
+            <div className="open-editors">
+              {openEditors.map((tab) => (
+                <button key={tab.id} className={`open-editor ${activeEditor === tab.id ? "is-active" : ""}`} onClick={() => onSelectEditor(tab.id)}>
+                  <span className="tree-icon">{tab.kind === "diagram" ? "◎" : tab.kind === "harness" ? "⚙" : "📄"}</span>
+                  <span>{tab.label}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+        <div className="sidebar-subheading">FILES</div>
+        <div className="tree-list">
+          {workspaceTree.length > 0 ? (
+            workspaceTree.map((node) => <TreeItem key={node.id} node={node} depth={0} activeEditor={activeEditor} onSelectFile={onSelectFile} />)
+          ) : (
+            <p className="sidebar-empty">빈 폴더입니다.</p>
+          )}
         </div>
       </div>
     </aside>

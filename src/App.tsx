@@ -31,6 +31,7 @@ import {
 import {
   buildHarnessArtifacts,
   findWorkspaceHarnessFile,
+  getHarnessPreset,
   inferHarnessPreset,
   tryParseHarnessConfig,
 } from "./lib/harness";
@@ -110,6 +111,8 @@ export default function App() {
   const buildGenRef = useRef(0);
   // Active fetch controllers keyed by generation id — stopBuildLoop aborts them.
   const buildAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const canvasStageRef = useRef<HTMLDivElement | null>(null);
+  const [canvasReady, setCanvasReady] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("NO FOLDER OPENED");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [openedFiles, setOpenedFiles] = useState<WorkspaceFile[]>([]);
@@ -328,6 +331,24 @@ export default function App() {
   );
   const hasBuildableNodes = diagram.nodes.some((node) => isBuildableShape(node.shape));
   const workspaceTree = useMemo(() => buildWorkspaceTree(workspaceFiles), [workspaceFiles]);
+
+  useEffect(() => {
+    const element = canvasStageRef.current;
+    if (!element || activeEditor !== "diagram" || nodes.length === 0) {
+      setCanvasReady(false);
+      return;
+    }
+
+    const updateCanvasReady = () => {
+      const rect = element.getBoundingClientRect();
+      setCanvasReady(rect.width > 0 && rect.height > 0);
+    };
+
+    updateCanvasReady();
+    const observer = new ResizeObserver(updateCanvasReady);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [activeEditor, nodes.length, workspaceFiles.length]);
 
   const editorTabs = useMemo<EditorTab[]>(() => {
     const tabs = [...baseTabs];
@@ -1137,7 +1158,7 @@ export default function App() {
 
     if (activeEditor === "spec") {
       if (!result) {
-        return renderTextDocument("specification.md", "No generated specification yet.\n\nUse 1. GENERATE to create one.");
+        return renderTextDocument("specification.md", "No generated specification yet.\n\nUse 2. Generate to create one.");
       }
 
       return renderTextDocument(
@@ -1246,7 +1267,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="canvas-stage">
+        <div className="canvas-stage" ref={canvasStageRef}>
           {isEmptyCanvas ? (
             <DiagramEmptyState
               brief={diagramBrief}
@@ -1256,7 +1277,7 @@ export default function App() {
               onBriefChange={setDiagramBrief}
               onGenerate={() => void generateDiagramFromBrief("replace")}
             />
-          ) : (
+          ) : canvasReady ? (
             <ReactFlow
               className="flow-canvas"
               nodes={nodes}
@@ -1272,11 +1293,60 @@ export default function App() {
               <MiniMap pannable zoomable />
               <Controls />
             </ReactFlow>
+          ) : (
+            <div className="canvas-loading">Preparing diagram canvas...</div>
           )}
         </div>
       </section>
     );
   };
+
+  const hasWorkspace = workspaceFiles.length > 0;
+  const buildOrder = buildLoopState?.order ?? [];
+  const buildDone = buildOrder.filter((id) => buildLoopState?.records[id]?.status === "done").length;
+  const activeWorkflowStep = !hasWorkspace || !harnessConfig ? "target" : activeAuxPanel;
+  const workflowSteps = [
+    {
+      id: "target",
+      index: "1",
+      title: "Target",
+      detail: !hasWorkspace ? "Open a folder first" : harnessConfig ? getHarnessPreset(harnessConfig.presetId).label : "Choose app type",
+      done: Boolean(harnessConfig),
+      active: activeWorkflowStep === "target",
+      disabled: !hasWorkspace,
+      onClick: () => setIsSetupOpen(true),
+    },
+    {
+      id: "ai",
+      index: "2",
+      title: "Generate",
+      detail: diagram.nodes.length > 0 ? `${diagram.nodes.length} nodes ready` : "Brief to diagram",
+      done: diagram.nodes.length > 0,
+      active: activeWorkflowStep === "ai",
+      disabled: !hasWorkspace,
+      onClick: () => setActiveAuxPanel("ai"),
+    },
+    {
+      id: "inspector",
+      index: "3",
+      title: "Edit",
+      detail: selectedNodes.length + selectedEdges.length > 0 ? `${selectedNodes.length + selectedEdges.length} selected` : "Select a node",
+      done: diagram.nodes.length > 0,
+      active: activeWorkflowStep === "inspector",
+      disabled: !hasWorkspace,
+      onClick: () => setActiveAuxPanel("inspector"),
+    },
+    {
+      id: "build",
+      index: "4",
+      title: "Build",
+      detail: buildOrder.length > 0 ? `${buildDone}/${buildOrder.length} done` : "Run code + tests",
+      done: buildOrder.length > 0 && buildDone === buildOrder.length,
+      active: activeWorkflowStep === "build",
+      disabled: !hasWorkspace,
+      onClick: () => setActiveAuxPanel("build"),
+    },
+  ];
 
   return (
     <div className="ide-shell">
@@ -1292,13 +1362,31 @@ export default function App() {
         </div>
       </header>
 
-      <div className={`workbench ${workspaceFiles.length === 0 ? "is-welcome" : ""}`}>
+      <nav className="workflow-rail" aria-label="Graph Coding workflow">
+        {workflowSteps.map((step) => (
+          <button
+            key={step.id}
+            type="button"
+            className={`workflow-step ${step.active ? "is-active" : ""} ${step.done ? "is-done" : ""}`}
+            disabled={step.disabled}
+            onClick={step.onClick}
+          >
+            <span className="workflow-step__index">{step.index}</span>
+            <span className="workflow-step__copy">
+              <strong>{step.title}</strong>
+              <small>{step.detail}</small>
+            </span>
+          </button>
+        ))}
+      </nav>
+
+      <div className={`workbench ${hasWorkspace ? "" : "is-welcome"}`}>
         <ExplorerPanel
           workspaceName={workspaceName}
           workspaceTree={workspaceTree}
           editorTabs={editorTabs}
           activeEditor={activeEditor}
-          hasWorkspace={workspaceFiles.length > 0}
+          hasWorkspace={hasWorkspace}
           onSelectEditor={setActiveEditor}
           onSelectFile={handleSelectWorkspaceFile}
           onAddNode={addNodeOfType}
@@ -1308,7 +1396,7 @@ export default function App() {
         />
 
         <section className="main-column">
-          {workspaceFiles.length > 0 ? (
+          {hasWorkspace ? (
             <div className="editor-tabs">
               {editorTabs.map((tab) => (
                 <div key={tab.id} className={`editor-tab ${activeEditor === tab.id ? "is-active" : ""}`}>
@@ -1329,72 +1417,78 @@ export default function App() {
 
         </section>
 
-        {workspaceFiles.length > 0 ? (
-        <aside className="auxiliary-bar">
-          <div className="auxiliary-tabs">
-            <button className={activeAuxPanel === "ai" ? "is-active" : ""} onClick={() => setActiveAuxPanel("ai")}>
-              1. GENERATE
-            </button>
-            <button className={activeAuxPanel === "inspector" ? "is-active" : ""} onClick={() => setActiveAuxPanel("inspector")}>
-              2. EDIT
-            </button>
-            <button className={activeAuxPanel === "build" ? "is-active" : ""} onClick={() => setActiveAuxPanel("build")}>
-              3. BUILD
-            </button>
-          </div>
+        {hasWorkspace ? (
+          <aside className="auxiliary-bar">
+            <div className="auxiliary-tabs">
+              <button className={activeAuxPanel === "ai" ? "is-active" : ""} onClick={() => setActiveAuxPanel("ai")}>
+                <span>2</span>
+                <strong>Generate</strong>
+                <small>Brief → diagram</small>
+              </button>
+              <button className={activeAuxPanel === "inspector" ? "is-active" : ""} onClick={() => setActiveAuxPanel("inspector")}>
+                <span>3</span>
+                <strong>Edit</strong>
+                <small>Node details</small>
+              </button>
+              <button className={activeAuxPanel === "build" ? "is-active" : ""} onClick={() => setActiveAuxPanel("build")}>
+                <span>4</span>
+                <strong>Build</strong>
+                <small>Code + tests</small>
+              </button>
+            </div>
 
-          <div className="auxiliary-body">
-            {activeAuxPanel === "ai" ? (
-              <RunPanel
-                auth={auth}
-                diagram={diagram}
-                brief={diagramBrief}
-                diagramLoading={diagramLoading}
-                diagramResult={diagramResult}
-                diagramError={diagramError}
-                loading={loading}
-                result={result}
-                error={error}
-                onBriefChange={setDiagramBrief}
-                onGenerateDiagram={generateDiagramFromBrief}
-                onGenerate={generateSpec}
-              />
-            ) : activeAuxPanel === "inspector" ? (
-              <InspectorPanel
-                selectedNode={selectedNode}
-                selectedEdge={selectedEdge}
-                selectedCount={selectedNodes.length + selectedEdges.length}
-                onNodeFieldChange={updateNodeField}
-                onEdgeFieldChange={updateEdgeField}
-              />
-            ) : (
-              <BuildLoopPanel
-                diagram={diagram}
-                state={buildLoopState}
-                canRun={
-                  workspaceMode === "native" &&
-                  Boolean(workspaceRootPath) &&
-                  hasBuildableNodes &&
-                  diagramResult?.source !== "fallback"
-                }
-                blockedReason={
-                  workspaceMode !== "native" || !workspaceRootPath
-                    ? "Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다."
-                    : diagram.nodes.length === 0
-                      ? "먼저 diagram을 만들거나 확정하세요."
-                      : !hasBuildableNodes
-                        ? "Note는 빌드 대상이 아닙니다. State/Database/Service/API/Process/Input/Screen/Start-End 노드를 추가하세요."
-                      : diagramResult?.source === "fallback"
-                        ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
-                        : ""
-                }
-                onStart={() => void startBuildLoop()}
-                onStop={stopBuildLoop}
-                onReset={resetBuildLoop}
-              />
-            )}
-          </div>
-        </aside>
+            <div className="auxiliary-body">
+              {activeAuxPanel === "ai" ? (
+                <RunPanel
+                  auth={auth}
+                  diagram={diagram}
+                  brief={diagramBrief}
+                  diagramLoading={diagramLoading}
+                  diagramResult={diagramResult}
+                  diagramError={diagramError}
+                  loading={loading}
+                  result={result}
+                  error={error}
+                  onBriefChange={setDiagramBrief}
+                  onGenerateDiagram={generateDiagramFromBrief}
+                  onGenerate={generateSpec}
+                />
+              ) : activeAuxPanel === "inspector" ? (
+                <InspectorPanel
+                  selectedNode={selectedNode}
+                  selectedEdge={selectedEdge}
+                  selectedCount={selectedNodes.length + selectedEdges.length}
+                  onNodeFieldChange={updateNodeField}
+                  onEdgeFieldChange={updateEdgeField}
+                />
+              ) : (
+                <BuildLoopPanel
+                  diagram={diagram}
+                  state={buildLoopState}
+                  canRun={
+                    workspaceMode === "native" &&
+                    Boolean(workspaceRootPath) &&
+                    hasBuildableNodes &&
+                    diagramResult?.source !== "fallback"
+                  }
+                  blockedReason={
+                    workspaceMode !== "native" || !workspaceRootPath
+                      ? "Build Loop은 Open Folder로 연 native workspace에서만 실행됩니다."
+                      : diagram.nodes.length === 0
+                        ? "먼저 diagram을 만들거나 확정하세요."
+                        : !hasBuildableNodes
+                          ? "Note는 빌드 대상이 아닙니다. State/Database/Service/API/Process/Input/Screen/Start-End 노드를 추가하세요."
+                        : diagramResult?.source === "fallback"
+                          ? "현재 diagram은 fallback 결과입니다. 실제 Codex 응답을 받은 뒤 실행하세요."
+                          : ""
+                  }
+                  onStart={() => void startBuildLoop()}
+                  onStop={stopBuildLoop}
+                  onReset={resetBuildLoop}
+                />
+              )}
+            </div>
+          </aside>
         ) : null}
       </div>
 

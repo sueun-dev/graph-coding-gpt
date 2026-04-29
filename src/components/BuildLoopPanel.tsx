@@ -40,8 +40,8 @@ export default function BuildLoopPanel({
     <section className="build-loop-panel panel-surface">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">STEP 3</p>
-          <h2>Codex Build</h2>
+          <p className="eyebrow">STEP 4</p>
+          <h2>Build</h2>
         </div>
         <LiquidGlassBadge width={82} height={24} tone={canRun && !running ? "primary" : "status"}>
           {running ? "Running" : canRun ? "Ready" : "Blocked"}

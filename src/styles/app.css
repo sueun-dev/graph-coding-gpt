@@ -48,7 +48,7 @@ button {
 
 .ide-shell {
   display: grid;
-  grid-template-rows: 34px minmax(0, 1fr) 24px;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100vh;
   background: var(--bg);
   overflow: hidden;
@@ -64,6 +64,7 @@ button {
   border-bottom: 1px solid #111;
   color: #d4d4d4;
   font-size: 12px;
+  min-height: 34px;
 }
 
 .title-bar__brand {
@@ -103,12 +104,97 @@ button {
   overflow: hidden;
 }
 
-/* Welcome / no-aux states: aux bar isn't rendered, but the basic 3-col grid
-   gives main-column the middle 1fr automatically. We previously had a
-   `.workbench.is-welcome` override that hardcoded `300px minmax(0, 1fr)`,
-   but at viewports <=980px (where explorer is also `display:none`) it
-   collapsed main-column into the explorer slot — welcome card had no
-   horizontal room. Removing the override lets the cascade just work. */
+.workbench.is-welcome {
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+.workflow-rail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 10px;
+  background: #202020;
+  border-bottom: 1px solid var(--border);
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid #343434;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: #a7a7a7;
+  text-align: left;
+}
+
+.workflow-step:not(:disabled):hover {
+  border-color: #4a4a4a;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.workflow-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.workflow-step.is-active {
+  color: #ffffff;
+  border-color: rgba(78, 201, 176, 0.72);
+  background: linear-gradient(180deg, rgba(78, 201, 176, 0.16), rgba(78, 201, 176, 0.05));
+}
+
+.workflow-step.is-done {
+  border-color: rgba(137, 209, 133, 0.45);
+}
+
+.workflow-step__index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #2f2f2f;
+  color: #d7d7d7;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.workflow-step.is-active .workflow-step__index {
+  background: #0e639c;
+  color: #ffffff;
+}
+
+.workflow-step__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workflow-step__copy strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-step__copy small {
+  overflow: hidden;
+  color: #8d8d8d;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-step.is-active .workflow-step__copy small {
+  color: #c7f5ea;
+}
 
 .explorer-panel,
 .auxiliary-bar {
@@ -165,6 +251,10 @@ button {
   display: block;
   padding: 0 12px 6px;
   color: #969696;
+}
+
+.open-editors + .sidebar-subheading {
+  margin-top: 12px;
 }
 
 .icon-button,
@@ -399,6 +489,14 @@ button {
   color: var(--muted);
 }
 
+.setup-mini-steps {
+  margin: 4px 12px 8px;
+  padding-left: 18px;
+  color: #c7c7c7;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .block-item {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr) 18px;
@@ -529,6 +627,15 @@ button {
 .canvas-stage > .react-flow {
   width: 100%;
   height: 100%;
+}
+
+.canvas-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #8f8f8f;
+  font-size: 12px;
 }
 
 /* Empty-canvas hero. Shown when the diagram has zero nodes — replaces
@@ -747,27 +854,79 @@ button {
 
 .auxiliary-bar {
   display: grid;
-  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-rows: 68px minmax(0, 1fr);
   border-left: 1px solid var(--border);
 }
 
 .auxiliary-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
   background: #252526;
   border-bottom: 1px solid var(--border);
 }
 
 .auxiliary-tabs button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 7px;
+  min-width: 0;
   height: 100%;
-  padding: 0 12px;
-  border: 0;
-  background: transparent;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
   color: #9f9f9f;
-  font-size: 12px;
+  text-align: left;
+}
+
+.auxiliary-tabs button span {
+  grid-row: 1 / 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #303030;
+  color: #d6d6d6;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.auxiliary-tabs button strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auxiliary-tabs button small {
+  overflow: hidden;
+  color: #818181;
+  font-size: 10px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .auxiliary-tabs button.is-active {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(78, 201, 176, 0.55);
+  background: rgba(78, 201, 176, 0.08);
+}
+
+.auxiliary-tabs button.is-active span {
+  background: #0e639c;
+  color: #ffffff;
+}
+
+.auxiliary-tabs button.is-active small {
+  color: #baeade;
 }
 
 .auxiliary-body {
@@ -1088,6 +1247,7 @@ button {
   background: var(--blue);
   color: #ffffff;
   font-size: 12px;
+  min-height: 24px;
 }
 
 .title-action-button {
@@ -1890,18 +2050,22 @@ button {
 
 @media (max-width: 1380px) {
   .workbench {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: 250px minmax(0, 1fr) 330px;
   }
 
-  .auxiliary-bar {
-    display: none;
+  .workbench.is-welcome {
+    grid-template-columns: 250px minmax(0, 1fr);
   }
 }
 
 @media (max-width: 980px) {
   .workbench {
-    /* Explorer panel below also hides — drop its column entirely. */
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(260px, 34vh);
+  }
+
+  .workbench.is-welcome {
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .explorer-panel {
@@ -1909,7 +2073,16 @@ button {
   }
 
   .main-column {
-    grid-template-rows: 35px minmax(0, 1fr) 240px;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .auxiliary-bar {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .workflow-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .title-bar {

@@ -14,7 +14,7 @@ type DiagramEmptyStateProps = {
  * Empty-canvas hero. Replaces the ReactFlow surface when the diagram has zero
  * nodes so the very first interaction after opening a workspace is crystal
  * clear: write a brief, press the button, get a diagram. Also carries the
- * 1→2→3 phase tracker so users know where they are in the loop.
+ * 2→3→4 phase tracker because Target is handled before the canvas appears.
  */
 export default function DiagramEmptyState({
   brief,
@@ -39,15 +39,15 @@ export default function DiagramEmptyState({
     <div className="diagram-empty">
       <ol className="diagram-empty__steps" aria-label="build phases">
         <li className="is-active">
-          <span className="diagram-empty__step-num">1</span>
+          <span className="diagram-empty__step-num">2</span>
           <span>Brief → Diagram</span>
         </li>
         <li>
-          <span className="diagram-empty__step-num">2</span>
+          <span className="diagram-empty__step-num">3</span>
           <span>Edit on canvas</span>
         </li>
         <li>
-          <span className="diagram-empty__step-num">3</span>
+          <span className="diagram-empty__step-num">4</span>
           <span>Build Loop</span>
         </li>
       </ol>

@@ -45,8 +45,8 @@ export default function RunPanel({
     <section className="run-panel panel-surface">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">STEP 1</p>
-          <h2>Codex Plan</h2>
+          <p className="eyebrow">STEP 2</p>
+          <h2>Generate</h2>
         </div>
         <LiquidGlassBadge width={128} height={24} tone={auth?.codexAuthenticated ? "primary" : "status"}>
           {auth?.codexAuthenticated ? "Codex Ready" : "Auth Check Needed"}
@@ -54,7 +54,7 @@ export default function RunPanel({
       </div>
 
       {hasDiagram ? (
-        /* STEP 1 (refine mode) — user already has a diagram; let them iterate on it here.
+        /* STEP 2 (refine mode) — user already has a diagram; let them iterate on it here.
            The initial brief input lives in the canvas empty-state, so this card only renders
            once a diagram exists. */
         <div className="runtime-card">
@@ -77,14 +77,14 @@ export default function RunPanel({
           </p>
         </div>
       ) : (
-        /* STEP 1 (empty mode) — brief input lives in the canvas. Keep this side panel quiet
-           but informative so the user sees the whole 3-step flow laid out. */
+        /* STEP 2 (empty mode) — brief input lives in the canvas. Keep this side panel quiet
+           but informative so the user sees the whole flow laid out. */
         <div className="runtime-card runtime-card--subtle">
           <h3>시작하는 법</h3>
           <ol className="runtime-flowlist">
             <li><strong>캔버스</strong>에 한 문장 brief를 적고 <em>Generate Diagram</em>을 누르세요.</li>
             <li>생성된 노드/관계선을 <strong>캔버스</strong>에서 직접 편집합니다.</li>
-            <li>오른쪽 <strong>3. BUILD</strong> 탭 → <em>Start Build Loop</em>으로 코드 + 테스트를 실행합니다.</li>
+            <li>오른쪽 <strong>4. Build</strong> 탭 → <em>Start Build Loop</em>으로 코드 + 테스트를 실행합니다.</li>
           </ol>
         </div>
       )}
@@ -162,12 +162,12 @@ export default function RunPanel({
         </div>
       )}
 
-      {/* STEP 2 — Build Loop hint (next action points user to the Build tab) */}
+      {/* STEP 3/4 — next action points user from editing to the Build tab. */}
       {hasDiagram && diagramResult?.source !== "fallback" ? (
         <div className="runtime-card runtime-card--cta">
-          <h3>2. 다음 단계</h3>
+          <h3>3. Edit, then Build</h3>
           <p>
-            노드를 다 편집했으면 오른쪽 <strong>3. BUILD</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 계획, 패치, 테스트를 노드 단위로 실행합니다.
+            노드를 다 편집했으면 오른쪽 <strong>4. Build</strong> 탭으로 가서 <strong>Start Build Loop</strong>을 누르세요. Codex가 계획, 패치, 테스트를 노드 단위로 실행합니다.
           </p>
         </div>
       ) : null}

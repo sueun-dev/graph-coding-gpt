@@ -55,8 +55,8 @@ export default function InspectorPanel({
     <aside className="inspector">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">STEP 2</p>
-          <h2>Edit Selection</h2>
+          <p className="eyebrow">STEP 3</p>
+          <h2>Edit</h2>
         </div>
         <span className="selection-count">{selectedCount} selected</span>
       </div>
@@ -174,7 +174,7 @@ export default function InspectorPanel({
         <div className="empty-state">
           <h3>캔버스에서 편집할 항목을 선택하세요</h3>
           <p>노드를 선택하면 기능 설명을 입력할 수 있고, 선을 선택하면 방향 관계를 구체화할 수 있습니다.</p>
-          <p>여러 노드를 선택한 뒤 스펙 생성을 누르면 해당 범위만 부분 구현하도록 AI가 판단합니다.</p>
+          <p>여러 노드를 선택한 뒤 스펙 생성을 누르면 해당 범위만 Codex가 부분 구현 범위로 판단합니다.</p>
         </div>
       )}
     </aside>

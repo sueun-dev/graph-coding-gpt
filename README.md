@@ -39,9 +39,10 @@ Welcome screen is intentionally two interactive things: a path input with **Open
 
 After opening a folder:
 
-- **Left:** Explorer with OPEN EDITORS, the workspace tree, a HARNESS section, and a DIAGRAM BLOCKS palette.
+- **Top:** one workflow rail: **Target → Generate → Edit → Build**.
+- **Left:** Project target, architecture blocks, active docs, and files.
 - **Center:** React Flow canvas + a small bottom panel that starts with just `GRAPH JSON` (SPEC / BUILD PROMPT / ITERATION tabs appear only once you've generated a spec).
-- **Right:** three tabs — **AI** (brief + Generate Diagram + collapsed optional Spec), **INSPECTOR** (edit the selected node or edge), **BUILD** (Start Build Loop, per-node status list).
+- **Right:** three task panels — **Generate** (brief + Generate Diagram + collapsed optional Spec), **Edit** (selected node/edge details), **Build** (Start Build Loop, per-node status list).
 
 Spec generation is deliberately collapsed into an optional `<details>` because **the Build Loop does not read the spec** — spec is for human review and export.
 
@@ -66,7 +67,7 @@ npm run dev:client
 GRAPHCODING_PORT=9100 npm run dev
 ```
 
-Open `http://localhost:5173`, type a project folder path, click **Open**, run the Harness wizard that auto-opens, then go to the **AI** tab, write a brief, click **Generate Diagram**. When the diagram is drafted and edited, switch to **BUILD** → **Start Build Loop**.
+Open `http://localhost:5173`, type a project folder path, click **Open**, run the Target wizard that auto-opens, then use **Generate** to draft the diagram. When the diagram is drafted and edited, switch to **Build** → **Start Build Loop**.
 
 ## A minimal first run
 

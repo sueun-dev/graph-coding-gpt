@@ -58,7 +58,7 @@ export function LiquidGlassButton({
 
   return (
     <span className={`liquid-glass-slot ${disabled ? "is-disabled" : ""}`} style={sizeStyle({ width, height })}>
-      <LiquidGlass className="liquid-glass-shell" {...glassProps} onClick={disabled ? undefined : () => undefined}>
+      <LiquidGlass className="liquid-glass-shell" {...glassProps} onClick={disabled ? undefined : onClick}>
         <button
           type={type}
           title={title}
