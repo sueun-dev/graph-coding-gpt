@@ -6,7 +6,7 @@ const BASE_PATHS = {
   testsDir: "tests",
 } as const;
 
-const DEFAULT_DESIGN: HarnessDesign = {
+export const DEFAULT_DESIGN: HarnessDesign = {
   theme: "dark",
   referenceStyle: "Clean minimal product UI",
   palette: {
@@ -124,8 +124,8 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
     label: "API Service",
     tagline: "Backend-first, typed contracts, DB and tests",
     description: "REST/worker/backend 시스템을 빠르게 시작하기 위한 서버 중심 preset",
-    defaults: {
-      ...baseHarness("api-service", "API Service"),
+    defaults: ((base) => ({
+      ...base,
       stack: {
         appType: "api-service",
         frontend: "Minimal admin client",
@@ -136,7 +136,7 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
         auth: "Bearer / OAuth",
       },
       agent: {
-        ...baseHarness("api-service", "API Service").agent,
+        ...base.agent,
         reasoningEffort: "xhigh",
       },
       design: designWith({
@@ -158,7 +158,7 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
         "Generate OpenAPI-friendly contracts when possible.",
         "Implement both PUT and PATCH for mutable resources.",
       ],
-    },
+    }))(baseHarness("api-service", "API Service")),
   },
   {
     id: "agent-tool",

@@ -56,20 +56,25 @@ type NativeWorkspaceEntry = {
   type: string;
 };
 
-const mapFile = (file: File, path: string, options: MapFileOptions = {}): WorkspaceFile => ({
-  id: crypto.randomUUID(),
-  path,
-  name: path.split("/")[path.split("/").length - 1] ?? path,
-  parts: path.split("/"),
-  size: options.size ?? file.size,
-  type: options.type ?? file.type,
-  file,
-  source: options.source ?? "browser",
-  rootPath: options.rootPath,
-});
+const mapFile = (file: File, path: string, options: MapFileOptions = {}): WorkspaceFile => {
+  const parts = path.split("/");
+  return {
+    id: crypto.randomUUID(),
+    path,
+    name: parts[parts.length - 1] ?? path,
+    parts,
+    size: options.size ?? file.size,
+    type: options.type ?? file.type,
+    file,
+    source: options.source ?? "browser",
+    rootPath: options.rootPath,
+  };
+};
+
+const fileNameFromPath = (path: string): string => path.split("/").pop() ?? path;
 
 const createVirtualFile = (path: string, content: string, type = "application/json") =>
-  mapFile(new File([content], path.split("/")[path.split("/").length - 1] ?? path, { type }), path);
+  mapFile(new File([content], fileNameFromPath(path), { type }), path);
 
 export const createWorkspaceFilesFromFileList = (fileList: FileList | File[]) => {
   const files = Array.from(fileList);
