@@ -1,24 +1,11 @@
 import { useEffect, useState } from "react";
-import { HARNESS_PRESETS, cloneHarnessConfig, createHarnessFromPreset, getHarnessPreset } from "../lib/harness";
-import type { HarnessConfig, HarnessDesign, HarnessPresetId } from "../lib/types";
+import { DEFAULT_DESIGN, HARNESS_PRESETS, cloneHarnessConfig, createHarnessFromPreset, getHarnessPreset } from "../lib/harness";
+import type { HarnessConfig, HarnessPresetId } from "../lib/types";
 import { LiquidGlassButton } from "./LiquidGlassControls";
 
-const FALLBACK_DESIGN: HarnessDesign = {
-  theme: "dark",
-  referenceStyle: "Clean minimal product UI",
-  palette: {
-    primary: "#6366f1",
-    accent: "#f59e0b",
-    background: "#0b0b0f",
-    foreground: "#f5f5f5",
-    muted: "#1f2024",
-    error: "#ef4444",
-  },
-  radius: "rounded",
-  density: "comfortable",
-  typography: { heading: "Inter", body: "Inter", mono: "JetBrains Mono" },
-  notes: "",
-};
+// Shared default design tokens, reused so the modal's fallback stays in sync
+// with the canonical defaults in lib/harness.
+const FALLBACK_DESIGN = DEFAULT_DESIGN;
 
 const ensureDesign = (config: HarnessConfig): HarnessConfig => {
   if (config.design && config.design.palette && config.design.typography) {

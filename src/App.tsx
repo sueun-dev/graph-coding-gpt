@@ -153,7 +153,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedNodesLength(nodes) > 0 || edges.some((edge) => edge.selected)) {
+    if (nodes.some((node) => node.selected) || edges.some((edge) => edge.selected)) {
       setActiveAuxPanel("inspector");
     }
   }, [edges, nodes]);
@@ -327,10 +327,19 @@ export default function App() {
   const selectedEdges = edges.filter((edge) => edge.selected);
   const selectedNode = selectedNodes[0] ?? null;
   const selectedEdge = selectedEdges[0] ?? null;
-  const diagram = buildDiagramDocument(
-    nodes,
-    edges,
-    selectedNodes.map((node) => node.id),
+  // Memoized so the document object identity is stable across renders that don't
+  // change the diagram — it's passed as a prop to RunPanel/BuildLoopPanel and
+  // rebuilding it every render would needlessly re-render those panels. Selected
+  // node ids are a deterministic function of `nodes`, so [nodes, edges] is a
+  // complete dependency set.
+  const diagram = useMemo(
+    () =>
+      buildDiagramDocument(
+        nodes,
+        edges,
+        nodes.filter((node) => node.selected).map((node) => node.id),
+      ),
+    [nodes, edges],
   );
   const hasBuildableNodes = diagram.nodes.some((node) => isBuildableShape(node.shape));
   const buildableDiagramNodeIds = useMemo(
@@ -1664,10 +1673,6 @@ export default function App() {
       />
     </div>
   );
-}
-
-function selectedNodesLength(nodes: DiagramNodeType[]) {
-  return nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0);
 }
 
 function createDiagramBuildSignature(nodes: DiagramNodeType[], edges: DiagramEdge[]) {
