@@ -87,9 +87,11 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
 
 ```
  src/
-   App.tsx               main shell; build-loop driver; persistence gates
-   components/           ExplorerPanel, RunPanel, InspectorPanel,
-                         BuildLoopPanel, BottomPanel, WorkspaceSetupModal
+   App.tsx               main shell; build-loop driver; persistence gates;
+                         React Flow canvas + bottom panel (GRAPH JSON / SPEC tabs)
+   components/           ExplorerPanel, RunPanel, InspectorPanel, BuildLoopPanel,
+                         WorkspaceSetupModal, DiagramNode, DiagramEmptyState,
+                         LiquidGlassControls
    lib/                  diagram, harness, workspace, types
    styles/app.css        VS Code-styled layout, 3-column workbench
 
