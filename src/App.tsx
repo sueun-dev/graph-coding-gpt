@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -55,7 +55,6 @@ import {
   buildWorkspaceTree,
   createWorkspaceFilesFromNativeListing,
   createWorkspaceFilesFromDirectoryHandle,
-  createWorkspaceFilesFromFileList,
   downloadArtifacts,
   mergeWorkspaceArtifacts,
   readWorkspaceFileText,
@@ -82,10 +81,6 @@ type AuthStatus = {
 };
 
 type AuxPanel = "ai" | "inspector" | "build";
-type DirectoryWindow = Window &
-  typeof globalThis & {
-    showDirectoryPicker?: (options?: { mode?: "read" | "readwrite"; startIn?: string }) => Promise<FileSystemDirectoryHandle>;
-  };
 type WorkspaceMode = "none" | "directory" | "imported" | "native";
 
 const baseTabs: EditorTab[] = [
@@ -103,7 +98,6 @@ export default function App() {
   const [diagramResult, setDiagramResult] = useState<DiagramGenerationResponse | null>(null);
   const [diagramError, setDiagramError] = useState("");
   const [diagramLoading, setDiagramLoading] = useState(false);
-  const [lastSpecMode, setLastSpecMode] = useState<"full" | "selection" | null>(null);
   const [buildLoopState, setBuildLoopState] = useState<BuildLoopState | null>(null);
   const [buildSyncing, setBuildSyncing] = useState(false);
   const buildAbortRef = useRef(false);
@@ -421,7 +415,6 @@ export default function App() {
     setNodes(fresh.nodes);
     setEdges(fresh.edges);
     setResult(null);
-    setLastSpecMode(null);
     setError("");
     setBuildLoopState(null);
     setDiagramResult(null);
@@ -527,7 +520,6 @@ export default function App() {
     setWorkspaceRootPath(rootPath);
     setWorkspaceMode(mode);
     setResult(null);
-    setLastSpecMode(null);
     setError("");
 
 
@@ -684,40 +676,6 @@ export default function App() {
     }
   };
 
-  const handleConnectWorkspace = () => {
-    const hostWindow = window as DirectoryWindow;
-    if (!hostWindow.showDirectoryPicker || !window.isSecureContext) {
-      setWorkspaceNotice("Native workspace connection is unavailable here. Use Open Folder for import mode.");
-      return;
-    }
-
-    void hostWindow
-      .showDirectoryPicker({ mode: "read" })
-      .then(async (handle) => {
-        const loaded = await createWorkspaceFilesFromDirectoryHandle(handle);
-        await loadWorkspace(loaded.rootName, loaded.files, "directory", handle, null);
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-
-        const detail = error instanceof Error ? error.message : "unknown error";
-        setWorkspaceNotice(`Native workspace connection failed. Use Open Folder instead. (${detail})`);
-      });
-  };
-
-  const handleFolderInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) {
-      return;
-    }
-
-    const loaded = createWorkspaceFilesFromFileList(files);
-    void loadWorkspace(loaded.rootName, loaded.files, "imported", null, null);
-    event.target.value = "";
-  };
-
   const handleSelectWorkspaceFile = async (file: WorkspaceFile) => {
     setOpenedFiles((current) => (current.some((entry) => entry.path === file.path) ? current : [...current, file]));
     setActiveEditor(`file:${file.path}`);
@@ -772,9 +730,6 @@ export default function App() {
       }
 
       setResult(data);
-      setLastSpecMode(mode);
-  
-  
       setActiveEditor("spec");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "스펙 생성에 실패했습니다.");
@@ -825,9 +780,6 @@ export default function App() {
       setEdges(nextFlow.edges);
       setDiagramResult(data);
       setResult(null);
-      setLastSpecMode(null);
-  
-  
       setError("");
       setActiveEditor("diagram");
 
@@ -866,16 +818,6 @@ export default function App() {
       void persistBuildState(next);
       return next;
     });
-  };
-
-  const updateNodeRecord = (nodeId: string, patch: Partial<NodeBuildRecord>) => {
-    updateBuildState((prev) => ({
-      ...prev,
-      records: {
-        ...prev.records,
-        [nodeId]: { ...prev.records[nodeId], ...patch },
-      },
-    }));
   };
 
   const createPendingBuildStateFromDiagram = async (running: boolean): Promise<BuildLoopState> => {
