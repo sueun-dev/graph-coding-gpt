@@ -105,7 +105,7 @@ export default function BuildLoopPanel({
             <strong>Final Run</strong>
             <span>{runtimeLabel}</span>
           </div>
-          {runtimeVerification.url ? <p>served: {runtimeVerification.url}</p> : null}
+          {runtimeVerification.evidenceUrl ? <p>smoke evidence: {runtimeVerification.evidenceUrl} (server stopped after verification)</p> : null}
           {runtimeVerification.checks.length > 0 ? (
             <ul>
               {runtimeVerification.checks.slice(0, 6).map((check) => (

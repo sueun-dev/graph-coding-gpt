@@ -6,17 +6,16 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,magenta \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:client": "vite --host 0.0.0.0 --port 5173",
+    "dev:client": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "dev:server": "node --watch server/index.mjs",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "start:server": "node server/index.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@xyflow/react": "^12.8.5",
-    "cors": "^2.8.5",
     "express": "^5.2.1",
     "liquid-glass-react": "^1.1.1",
     "react": "^19.2.5",
@@ -30,6 +29,6 @@
     "jsdom": "^25.0.1",
     "typescript": "^5.8.3",
     "vite": "^7.1.7",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.10"
   }
 }

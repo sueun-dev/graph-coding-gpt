@@ -64,7 +64,7 @@ Treat these as mandatory regression cases. Reproduce each against the current
 checkout before changing it, then prove it is fixed afterward.
 
 1. **Unsafe local API origin boundary**
-   - The Express server currently emits `Access-Control-Allow-Origin: *`.
+   - The audited baseline emitted `Access-Control-Allow-Origin: *`.
    - A page from an unrelated origin can preflight JSON requests to local
      workspace read/write and Codex execution endpoints.
    - Bind local services deliberately, remove wildcard CORS, enforce an exact
@@ -342,5 +342,5 @@ Use evidence, not confidence language.
 The prompt defines the product mission, turns an impossible universal guarantee
 into a bounded support contract, preserves known failing cases as regression
 tests, and gives Codex an explicit completion gate. It is deliberately
-model-neutral, although the current server default is `gpt-5.4`; changing the
+model-neutral, although the current server default is `gpt-5.6-sol` with reasoning effort `high`; changing the
 model does not repair missing runtime adapters or weak verification logic.

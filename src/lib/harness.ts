@@ -75,6 +75,7 @@ const baseHarness = (presetId: HarnessPresetId, label: string): HarnessConfig =>
 export const HARNESS_PRESETS: HarnessPreset[] = [
   {
     id: "saas-web",
+    supported: true,
     label: "SaaS Web App",
     tagline: "Next.js, dashboard UX, auth, tests",
     description: "관리 화면, 인증, API, 데이터 계층까지 포함하는 일반적인 SaaS 웹앱용 기본 하네스",
@@ -121,6 +122,8 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
   },
   {
     id: "api-service",
+    supported: false,
+    unsupportedReason: "Python/FastAPI install, test, typecheck, and runtime adapters are not implemented yet.",
     label: "API Service",
     tagline: "Backend-first, typed contracts, DB and tests",
     description: "REST/worker/backend 시스템을 빠르게 시작하기 위한 서버 중심 preset",
@@ -162,6 +165,7 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
   },
   {
     id: "agent-tool",
+    supported: true,
     label: "Agent Tooling",
     tagline: "MCP, skills, shell, evaluation loop",
     description: "에이전트 런타임, 오케스트레이션 도구, MCP/skills 중심 제품용 preset",
@@ -208,6 +212,8 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
   },
   {
     id: "desktop-app",
+    supported: false,
+    unsupportedReason: "Tauri/Rust native build and packaging verification are not implemented yet.",
     label: "Desktop App",
     tagline: "Tauri/Electron, local files, native packaging",
     description: "로컬 파일 접근과 네이티브 packaging이 중요한 데스크톱 앱용 preset",
@@ -255,6 +261,8 @@ export const HARNESS_PRESETS: HarnessPreset[] = [
   },
   {
     id: "mobile-app",
+    supported: false,
+    unsupportedReason: "Flutter/Dart install, analyzer, test, and device runtime adapters are not implemented yet.",
     label: "Mobile App",
     tagline: "Flutter/React Native, API contracts, device states",
     description: "모바일 화면 흐름과 상태 전이가 핵심인 제품용 preset",

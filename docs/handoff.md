@@ -42,8 +42,8 @@ codex login status
 
 The server runs Codex with:
 
-- model: `gpt-5.4` by default
-- reasoning effort: `medium` by default
+- model: `gpt-5.6-sol` (GPT-5.6 Sol) by default
+- reasoning effort: `high` by default
 - sandbox: `workspace-write`
 
 Overrides:
@@ -132,10 +132,12 @@ Known caveats:
 - The UI does not stream intermediate build-node retry states yet; it jumps from
   `implementing` to `done` or `failed`.
 - Spec generation is optional and not used by the build loop.
-- Fallback diagram/spec responses can look fast; treat them as failed AI output,
-  not as validated project plans.
-- macOS has had the most testing. Linux/Windows native folder dialog fallbacks
-  exist but need fresh QA.
+- Fallback diagram/spec responses are explicit degraded failures and cannot
+  unlock Build.
+- Only Node-based SaaS Web App and Agent Tooling presets are enabled. Python,
+  Tauri/Rust, and Flutter presets are disabled until runtime adapters exist.
+- macOS is the declared host support. Linux/Windows folder dialogs are not
+  claimed as verified.
 
 ## Git Handoff Checklist
 
@@ -164,4 +166,3 @@ Before making the repo public or sharing broadly:
 rg -n --hidden -S "(api[_-]?key|token|secret|password|sk-|ghp_|github_pat_)" . \
   --glob '!node_modules' --glob '!.git' --glob '!dist' --glob '!.tmp' --glob '!generated'
 ```
-

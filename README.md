@@ -99,8 +99,8 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
    index.mjs             express API on :8791 (override with GRAPHCODING_PORT)
      /api/health            liveness probe ({ ok: true })
      /api/auth/status       fresh codex login check (bypasses 30s cache)
-     /api/ai/diagram        brief → structured diagram (gpt-5.4)
-     /api/ai/spec           diagram → structured spec (gpt-5.4, optional)
+     /api/ai/diagram        brief → structured diagram (gpt-5.6-sol, high)
+     /api/ai/spec           diagram → structured spec (gpt-5.6-sol, high, optional)
      /api/ai/build-order    topological sort (note/group skipped)
      /api/ai/build-node     codex workspace-write + vitest + retry
      /api/build-state/save  persist .graphcoding/build-state.json
@@ -129,11 +129,11 @@ The phase runs, in order:
 
 1. **Isolation gate (before).** Same external-symlink / host-path / pnpm-entry guard as the per-node loop, re-run against the assembled workspace.
 2. **Dependency sync.** Installs the workspace's own dependencies (skipped with a reason when already satisfied).
-3. **Quality scripts.** Runs the workspace's `test`, `typecheck`, and `build` npm scripts when present; each missing script is recorded as `skipped` rather than failing. The first non-passing script short-circuits the phase.
-4. **Dev-server smoke.** `runDevServerSmoke` boots the workspace's `dev` script and probes that the server actually comes up on its port; a missing `dev` script fails the smoke check.
+3. **Quality scripts.** Requires `test`, `build`, and every quality script enabled by the harness (`lint`, `typecheck`, `e2e`). A missing required script fails closed; optional missing scripts are explicitly recorded as skipped.
+4. **Dev-server smoke.** `runDevServerSmoke` boots the workspace's `dev` script on an allocated loopback port and requires a mountable HTML readiness response, not merely a non-empty HTTP 200. The temporary server is always stopped after evidence is collected.
 5. **Isolation gate (after).** Re-checks isolation once the app has been installed and booted.
 
-> **Note — `lint` is not a real gate.** The harness exposes a `Lint` quality toggle (`config.quality.lint`, surfaced in the setup modal and the harness prompt sent to codex), but the runtime-verification phase only ever runs `test`, `typecheck`, and `build` — **no linter is executed**. Treat the Lint checkbox as a prompt hint to codex, not an enforced gate.
+Only fully wired Node targets are selectable: **SaaS Web App** and **Agent Tooling**. Python/FastAPI, Tauri/Rust, and Flutter/Dart remain visible but disabled until complete runtime adapters exist.
 
 ## Reliability details
 
@@ -142,7 +142,7 @@ Things that broke during real E2E testing and got fixed:
 - **Vitest resolution leaking to sibling projects.** `npx vitest` via pnpm's shared store was picking up a neighbor repo's vitest. `detectTestRunner` now invokes `<cwd>/node_modules/.bin/vitest` directly when present.
 - **Stop not stopping.** In-flight fetch kept going; late response overwrote paused state. Fixed with `AbortController` + a `buildGenRef` generation counter; every await re-checks `isCurrent()`.
 - **Stale per-node context.** The driver kept a local snapshot of `records` that never updated; node N always saw `previouslyBuilt = []`. Fixed by mirroring every `updateNodeRecord` into the local snapshot atomically.
-- **File diff missing modifications.** The `files` list only captured new files. Replaced with an mtime snapshot before/after so modified files (`package.json`, shared utils) are reported too.
+- **File diff missing modifications.** The `files` list only captured new files. Replaced with content-hash snapshots before/after so modified files are reported even when mtimes collide.
 - **Path-escape inconsistency.** `/api/build-state/save|load` and `/api/ai/build-node` bypassed `ensureWithinRoot`; file read/write APIs also needed realpath checks so existing symlinks cannot escape the workspace. These now route through root + realpath guards.
 - **External dependency leakage.** Codex once linked `node_modules` to a sibling project. Build-node now runs a workspace isolation gate after every attempt and feeds violations back into the retry loop instead of silently passing.
 - **Reload hang.** `reloadNativeWorkspace` errors inside the loop used to leave `running:true` forever. Now wrapped in a `safeReloadNativeWorkspace` that surfaces a notice and lets the driver continue.
@@ -151,10 +151,10 @@ Things that broke during real E2E testing and got fixed:
 
 ## Limitations
 
-- Diagram generation and each node build take time — `codex` runs `gpt-5.4` with reasoning effort `medium` by default. Override with `GRAPHCODING_CODEX_MODEL` or `GRAPHCODING_CODEX_REASONING_EFFORT`.
+- Diagram generation and each node build take time — `codex` runs `gpt-5.6-sol` with reasoning effort `high` by default. Override with `GRAPHCODING_CODEX_MODEL` or `GRAPHCODING_CODEX_REASONING_EFFORT`.
 - `"testing"` and `"fixing"` statuses are defined but the client doesn't currently stream intermediate server events, so the UI jumps `implementing → done | failed`. Server-sent events for in-progress retries is the next UX upgrade.
-- Fallback diagrams/specs (when codex fails) return with `ok:true`. The Build Loop already blocks Start when diagram source is fallback, but the spec path still ships a template silently if codex dies — treat unexpectedly fast spec results with suspicion.
-- Only tested on macOS with ChatGPT-backed codex login. Windows/Linux should work but the native folder dialog uses zenity/powershell fallbacks that haven't had the same mileage.
+- Fallback diagrams/specs are returned as explicit degraded failures (`ok:false`, HTTP 502/503) and never unlock Build.
+- The declared support matrix is macOS plus Node-based SaaS Web App and Agent Tooling targets. Windows/Linux native folder dialogs and the disabled non-Node presets are not claimed as verified.
 
 ## Ignored by default
 

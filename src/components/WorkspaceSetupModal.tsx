@@ -64,6 +64,8 @@ export default function WorkspaceSetupModal({
     return null;
   }
 
+  const selectedPreset = getHarnessPreset(config.presetId);
+
   const updateConfig = <K extends keyof HarnessConfig>(key: K, value: HarnessConfig[K]) => {
     setConfig((current) => ({
       ...current,
@@ -152,6 +154,9 @@ export default function WorkspaceSetupModal({
     setSaving(true);
     setSaveError("");
     try {
+      if (!selectedPreset.supported) {
+        throw new Error(selectedPreset.unsupportedReason || "This preset is not supported by the runtime verifier.");
+      }
       await onSave(config);
       onClose();
     } catch (error) {
@@ -206,14 +211,17 @@ export default function WorkspaceSetupModal({
               {HARNESS_PRESETS.map((preset) => (
                 <button
                   key={preset.id}
-                  className={`setup-preset-card ${config.presetId === preset.id ? "is-active" : ""}`}
+                  className={`setup-preset-card ${config.presetId === preset.id ? "is-active" : ""} ${!preset.supported ? "is-disabled" : ""}`}
                   onClick={() => applyPreset(preset.id)}
+                  disabled={!preset.supported}
+                  title={preset.unsupportedReason}
                 >
                   <div>
                     <strong>{preset.label}</strong>
                     <small>{preset.tagline}</small>
                   </div>
                   <p>{preset.description}</p>
+                  {!preset.supported ? <p className="result-warning">Unavailable: {preset.unsupportedReason}</p> : null}
                 </button>
               ))}
             </section>
@@ -455,7 +463,7 @@ export default function WorkspaceSetupModal({
               Cancel
             </LiquidGlassButton>
             {step === "preset" && (
-              <LiquidGlassButton width={72} height={30} onClick={() => setStep("advanced")}>
+              <LiquidGlassButton width={72} height={30} onClick={() => setStep("advanced")} disabled={!selectedPreset.supported}>
                 Next
               </LiquidGlassButton>
             )}
@@ -465,7 +473,7 @@ export default function WorkspaceSetupModal({
               </LiquidGlassButton>
             )}
             {step === "design" && (
-              <LiquidGlassButton width={122} height={30} onClick={save} disabled={saving}>
+              <LiquidGlassButton width={122} height={30} onClick={save} disabled={saving || !selectedPreset.supported}>
                 {saving ? "Saving..." : "Save Target"}
               </LiquidGlassButton>
             )}

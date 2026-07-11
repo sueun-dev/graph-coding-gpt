@@ -180,7 +180,9 @@ export type RuntimeVerificationResult = {
   failures: string[];
   stdout: string;
   stderr: string;
-  url?: string;
+  evidenceUrl?: string;
+  previewRunning?: boolean;
+  supportedProfile?: string;
   port?: number;
   startedAt?: string;
   finishedAt?: string;
@@ -362,6 +364,8 @@ export type HarnessPreset = {
   label: string;
   tagline: string;
   description: string;
+  supported: boolean;
+  unsupportedReason?: string;
   defaults: HarnessConfig;
 };
 

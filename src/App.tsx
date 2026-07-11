@@ -1146,7 +1146,7 @@ export default function App() {
         runtimeVerification: runtimeResult,
         finishedAt: new Date().toISOString(),
       }));
-      setWorkspaceNotice(`Build finished and runtime verified${runtimeResult.url ? ` at ${runtimeResult.url}` : ""}.`);
+      setWorkspaceNotice("Build finished. Runtime smoke passed and the temporary verification server was stopped.");
     } catch (caught) {
       const aborted = caught instanceof DOMException && caught.name === "AbortError";
       if (aborted || !isCurrent()) return;

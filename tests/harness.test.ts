@@ -52,6 +52,16 @@ describe("HARNESS_PRESETS / getHarnessPreset", () => {
       expect(preset.defaults.stack.appType.length).toBeGreaterThan(0);
     }
   });
+
+  it("advertises only presets backed by the Node runtime verifier", () => {
+    expect(HARNESS_PRESETS.filter((preset) => preset.supported).map((preset) => preset.id)).toEqual([
+      "saas-web",
+      "agent-tool",
+    ]);
+    for (const preset of HARNESS_PRESETS.filter((candidate) => !candidate.supported)) {
+      expect(preset.unsupportedReason).toBeTruthy();
+    }
+  });
 });
 
 describe("createHarnessFromPreset", () => {
