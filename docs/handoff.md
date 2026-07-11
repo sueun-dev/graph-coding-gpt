@@ -117,8 +117,12 @@ These are already handled in the current code:
 - Build order respects dependency-like edges, not only node layout.
 - Build-node prompts include previously completed node files.
 - Test execution prefers the target workspace's local `vitest` binary.
-- Build state persists to `.graphcoding/build-state.json`.
-- Diagram state persists to `.graphcoding/diagram.graph.json`.
+- Per-node Vitest/Jest execution is focused to `tests/<node-slug>`; the terminal
+  node and runtime verification retain the full-suite gate.
+- Build state persists to `.graphcoding/build-state.json` through serialized,
+  atomic writes.
+- Diagram state persists to `.graphcoding/diagram.graph.json` after a 400 ms
+  debounce.
 - Stop uses request aborting plus a generation counter so late responses cannot
   overwrite a paused run.
 - Workspace file reads/writes and build-state APIs guard real paths against
@@ -126,6 +130,12 @@ These are already handled in the current code:
 - After each Codex attempt, the server rejects external symlinks, host absolute
   path references, and invalid pnpm `node_modules` package entries before
   accepting a node as done.
+- Authentication checks are asynchronous and coalesced, isolation uses a
+  bounded-concurrency single tree pass, and content snapshots cache unchanged
+  streaming hashes.
+- Preview, isolation, workspace-file count, subprocess output, and runtime
+  artifact retention have explicit limits; hash caches are LRU-bounded and
+  runtime artifact cleanup is throttled to once per hour.
 
 Known caveats:
 

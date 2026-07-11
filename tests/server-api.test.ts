@@ -70,6 +70,18 @@ describe("Express API fail-closed boundaries", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
   });
 
+  it("coalesces concurrent auth checks without stalling health", async () => {
+    const startedAt = performance.now();
+    const authRequests = Array.from({ length: 20 }, () => fetch(`${baseUrl}/api/auth/status`));
+    const healthStartedAt = performance.now();
+    const health = await fetch(`${baseUrl}/api/health`);
+    const healthElapsed = performance.now() - healthStartedAt;
+    await Promise.all(authRequests);
+    expect(health.status).toBe(200);
+    expect(healthElapsed).toBeLessThan(500);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it("rejects invalid JSON and path traversal", async () => {
     const invalid = await fetch(`${baseUrl}/api/workspace/read-file`, {
       method: "POST",
@@ -86,6 +98,21 @@ describe("Express API fail-closed boundaries", () => {
     expect(traversal.status).toBe(400);
   });
 
+  it("rejects oversized file previews before reading them into memory", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "gcg-large-preview-"));
+    try {
+      await fs.writeFile(path.join(workspace, "large.txt"), Buffer.alloc(4 * 1024 * 1024 + 1, 65));
+      const response = await fetch(`${baseUrl}/api/workspace/read-file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspace, path: "large.txt" }),
+      });
+      expect(response.status).toBe(413);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an empty build graph", async () => {
     const response = await fetch(`${baseUrl}/api/ai/build-order`, {
       method: "POST",
@@ -96,6 +123,29 @@ describe("Express API fail-closed boundaries", () => {
     expect(response.status).toBe(400);
     expect(body.ok).toBe(false);
     expect(body.error).toMatch(/no buildable nodes|exactly one|empty/i);
+  });
+
+  it("keeps build-state JSON valid under concurrent atomic writes", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "gcg-build-state-"));
+    try {
+      const responses = await Promise.all(Array.from({ length: 20 }, (_, sequence) => fetch(`${baseUrl}/api/build-state/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspace, state: { sequence, records: {} } }),
+      })));
+      expect(responses.every((response) => response.ok)).toBe(true);
+      const load = await fetch(`${baseUrl}/api/build-state/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rootPath: workspace }),
+      });
+      const body = await load.json() as { ok: boolean; state: { sequence: number } };
+      expect(body.ok).toBe(true);
+      expect(body.state.sequence).toBeGreaterThanOrEqual(0);
+      expect(body.state.sequence).toBeLessThan(20);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("accepts a structurally complete graph and returns deterministic order", async () => {

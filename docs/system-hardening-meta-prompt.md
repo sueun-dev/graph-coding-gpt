@@ -262,6 +262,34 @@ Run at least this matrix:
 | Browser | open folder, save target, generate/edit/build gating | fallback or incomplete graph unlocks Build |
 | Dependencies | supported lockfile install | corrupt manifest, mixed package managers, vulnerable production tree |
 
+### Performance and resource-safety matrix
+
+Correctness includes remaining responsive under the declared workspace limits.
+Measure before and after; do not replace a correctness gate with a faster but
+weaker check.
+
+- Prohibit synchronous subprocess APIs in request handlers. Coalesce identical
+  in-flight status probes and prove a health request remains responsive during
+  a burst of authentication checks.
+- Avoid repeated full-tree passes within one node attempt. Combine compatible
+  isolation checks, use bounded filesystem concurrency, stream large-file
+  hashes, and cache hashes only behind high-resolution metadata fingerprints.
+- Run a node's focused tests while preserving a full suite at the terminal node
+  and final runtime gate. Repeated type checking must use workspace-local
+  incremental compiler state when supported.
+- Serialize client persistence and atomically replace server state files. Add a
+  concurrent-write regression test that proves every readable state is valid
+  JSON.
+- Put enforced limits on preview bytes, scanned text bytes, workspace file
+  count, subprocess output, prompt/log growth, generated artifacts, and retry
+  duration. Every exceeded limit must fail with a precise bounded response.
+- Keep Codex mutations sequential while they share a writable workspace.
+  Parallelize only independent reads or move each writer to an isolated
+  worktree with an explicit merge protocol.
+- Record benchmark fixtures and thresholds for a normal repository and a
+  synthetic multi-thousand-file repository. Report medians or ranges and the
+  hardware/runtime context; a single unrepeatable number is not proof.
+
 For every advertised runtime preset, add a real minimal fixture that can install,
 test, validate, build where applicable, start, answer its readiness probe, and
 shut down cleanly. If that cannot be done in this task, disable that preset and

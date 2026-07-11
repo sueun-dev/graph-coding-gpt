@@ -107,6 +107,7 @@ export default function App() {
   const buildGenRef = useRef(0);
   // Active fetch controllers keyed by generation id — stopBuildLoop aborts them.
   const buildAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const buildStatePersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const canvasStageRef = useRef<HTMLDivElement | null>(null);
   const [canvasReady, setCanvasReady] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("NO FOLDER OPENED");
@@ -282,10 +283,9 @@ export default function App() {
     }
 
     const payload = JSON.stringify({ nodes, edges });
-    localStorage.setItem(diagramStorageKey, payload);
-
-    if (workspaceMode === "native" && workspaceRootPath) {
-      const timer = setTimeout(() => {
+    const timer = setTimeout(() => {
+      localStorage.setItem(diagramStorageKey, payload);
+      if (workspaceMode === "native" && workspaceRootPath) {
         void fetch("/api/workspace/write-artifacts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -298,9 +298,9 @@ export default function App() {
         }).catch((err) => {
           console.warn("[diagram] disk save failed:", err);
         });
-      }, 600);
-      return () => clearTimeout(timer);
-    }
+      }
+    }, 400);
+    return () => clearTimeout(timer);
   }, [diagramHydrated, diagramStorageKey, edges, nodes, workspaceMode, workspaceRootPath]);
 
   useEffect(() => {
@@ -800,14 +800,23 @@ export default function App() {
 
   const persistBuildState = async (next: BuildLoopState) => {
     if (workspaceMode !== "native" || !workspaceRootPath) return;
-    try {
-      await fetch("/api/build-state/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rootPath: workspaceRootPath, state: next }),
+    const rootPath = workspaceRootPath;
+    const payload = JSON.stringify({ rootPath, state: next });
+    const queued = buildStatePersistChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const response = await fetch("/api/build-state/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        });
+        if (!response.ok) throw new Error(`Build state save failed with HTTP ${response.status}.`);
       });
-    } catch {
-      // Non-fatal: state persistence is best-effort.
+    buildStatePersistChainRef.current = queued;
+    try {
+      await queued;
+    } catch (error) {
+      console.warn("[build-state] persistence failed:", error);
     }
   };
 

@@ -27,7 +27,7 @@ You own the diagram. The loop turns each node into code + tests, fails visibly, 
 
 - **Brief → Diagram.** One sentence, one button. Codex returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
 - **Per-node build loop.** Topological order (ties broken by x-position), `note`/`group` shapes skipped. Each node goes implementing → done | failed. On failure, the test output is fed into the retry prompt — up to 3 retries.
-- **Real tests.** Every node writes vitest tests under `tests/<node-slug>/`. When the workspace has its own `test` script, the runner invokes that script through the workspace's package manager; only when no `test` script exists does it fall back to pinning the workspace's own `node_modules/.bin/vitest` directly, so it never resolves to a sibling project's version.
+- **Real tests without quadratic reruns.** Every buildable node writes tests under `tests/<node-slug>/`. Vitest/Jest workspaces run that node's focused test directory plus type checking; the terminal `startEnd` node and final runtime verification run the complete suite. Other runners use the workspace's declared package-manager test script. Local binaries are resolved from the target workspace, never a sibling project.
 - **Workspace isolation gate.** After every Codex attempt, the server rejects external symlinks, host absolute path references, and invalid pnpm `node_modules` package entries before treating the node as done.
 - **Correct cross-node context.** Each node's prompt includes the files produced by every prior completed node, so codex imports from them instead of re-implementing.
 - **Persistence.** Diagram and build state both live on disk under `.graphcoding/` (debounced), and auto-restore on workspace open. You can close the tab mid-build and come back.
@@ -114,8 +114,8 @@ State lives in three layers:
 
 | piece | react state | localStorage | disk (`.graphcoding/`) |
 |---|---|---|---|
-| diagram (nodes + edges) | ✓ | ✓ | `diagram.graph.json` (debounced 600ms) |
-| build-state (per-node status) | ✓ | — | `build-state.json` (written on every transition) |
+| diagram (nodes + edges) | ✓ | ✓ | `diagram.graph.json` (debounced 400ms) |
+| build-state (per-node status) | ✓ | — | `build-state.json` (serialized, atomic writes on every transition) |
 | brief text | ✓ | ✓ | — |
 | harness config | ✓ | — | `harness.json` (via write-artifacts) |
 
@@ -147,7 +147,11 @@ Things that broke during real E2E testing and got fixed:
 - **External dependency leakage.** Codex once linked `node_modules` to a sibling project. Build-node now runs a workspace isolation gate after every attempt and feeds violations back into the retry loop instead of silently passing.
 - **Reload hang.** `reloadNativeWorkspace` errors inside the loop used to leave `running:true` forever. Now wrapped in a `safeReloadNativeWorkspace` that surfaces a notice and lets the driver continue.
 - **Cross-workspace diagram overwrite.** Opening workspace B right after A could write A's nodes into B's disk file. A `hydratedKeyRef` now gates the save effect: only writes after the load effect has confirmed the current key.
-- **Silent 20× `spawnSync`.** `codexStatus()` forked a process on every request. Now cached with a 30s TTL; `/api/auth/status` still takes a fresh read.
+- **Event-loop stalls from synchronous subprocesses.** Codex authentication and native folder selection now use asynchronous child processes. Concurrent authentication requests coalesce into one check; ordinary internal checks retain a 30-second cache.
+- **Repeated full-workspace work.** Isolation now combines symlink and external-path checks in one bounded-concurrency tree walk. Content snapshots stream hashes and reuse unchanged-file hashes instead of loading and hashing every file on every node.
+- **Quadratic test cost.** A node runs its focused Vitest/Jest directory and typecheck; the terminal graph node and final runtime verifier still run the full suite, preserving the assembled-app gate.
+- **Persistence races.** Build-state writes are queued in the client and atomically renamed on the server. Diagram saves are debounced, and artifact/install state writes use the same atomic replacement primitive.
+- **Unbounded memory and disk growth.** File preview is capped at 4 MiB, text isolation at 2 MiB per file, workspace listing and snapshots at 50,000 files, captured process output at 2 MiB, hash caches at eight workspaces, and hourly artifact cleanup retains at most 500 files no older than seven days per runtime directory.
 
 ## Limitations
 
@@ -155,6 +159,7 @@ Things that broke during real E2E testing and got fixed:
 - `"testing"` and `"fixing"` statuses are defined but the client doesn't currently stream intermediate server events, so the UI jumps `implementing → done | failed`. Server-sent events for in-progress retries is the next UX upgrade.
 - Fallback diagrams/specs are returned as explicit degraded failures (`ok:false`, HTTP 502/503) and never unlock Build.
 - The declared support matrix is macOS plus Node-based SaaS Web App and Agent Tooling targets. Windows/Linux native folder dialogs and the disabled non-Node presets are not claimed as verified.
+- Codex node mutations remain sequential by design because attempts share one writable workspace. Parallelizing those writes would trade speed for nondeterministic corruption; scanning, hashing, authentication checks, and persistence are parallelized or coalesced where their contracts permit it.
 
 ## Ignored by default
 
