@@ -27,7 +27,7 @@ You own the diagram. The loop turns each node into code + tests, fails visibly, 
 
 - **Brief → Diagram.** One sentence, one button. Codex returns a structured diagram with nodes and edges; you edit it on a React Flow canvas with an Inspector panel.
 - **Per-node build loop.** Topological order (ties broken by x-position), `note`/`group` shapes skipped. Each node goes implementing → done | failed. On failure, the test output is fed into the retry prompt — up to 3 retries.
-- **Real tests.** Every node writes vitest tests under `tests/<node-slug>/`. The runner pins to the workspace's own `node_modules/.bin/vitest` so it never resolves to a sibling project's version.
+- **Real tests.** Every node writes vitest tests under `tests/<node-slug>/`. When the workspace has its own `test` script, the runner invokes that script through the workspace's package manager; only when no `test` script exists does it fall back to pinning the workspace's own `node_modules/.bin/vitest` directly, so it never resolves to a sibling project's version.
 - **Workspace isolation gate.** After every Codex attempt, the server rejects external symlinks, host absolute path references, and invalid pnpm `node_modules` package entries before treating the node as done.
 - **Correct cross-node context.** Each node's prompt includes the files produced by every prior completed node, so codex imports from them instead of re-implementing.
 - **Persistence.** Diagram and build state both live on disk under `.graphcoding/` (debounced), and auto-restore on workspace open. You can close the tab mid-build and come back.
@@ -97,6 +97,8 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
 
  server/
    index.mjs             express API on :8791 (override with GRAPHCODING_PORT)
+     /api/health            liveness probe ({ ok: true })
+     /api/auth/status       fresh codex login check (bypasses 30s cache)
      /api/ai/diagram        brief → structured diagram (gpt-5.4)
      /api/ai/spec           diagram → structured spec (gpt-5.4, optional)
      /api/ai/build-order    topological sort (note/group skipped)
@@ -104,6 +106,7 @@ The first node bootstraps `package.json`, `tsconfig.json`, `vitest.config.ts`, a
      /api/build-state/save  persist .graphcoding/build-state.json
      /api/build-state/load  auto-restore on workspace open
      /api/workspace/validate-isolation  external-link/path guard
+     /api/workspace/runtime-verify  assembled-app runtime check (see below)
      /api/workspace/*       open-folder, read-file, write-artifacts
 ```
 
@@ -117,6 +120,20 @@ State lives in three layers:
 | harness config | ✓ | — | `harness.json` (via write-artifacts) |
 
 On workspace open, disk wins for diagram (falls back to localStorage on read failure), and build-state is restored with `running:false, paused:true` so nothing resumes without an explicit user click.
+
+## Runtime verification
+
+Per-node vitest proves each module in isolation, but it does not prove the assembled app actually boots. `POST /api/workspace/runtime-verify` (`runWorkspaceRuntimeVerification` in `server/index.mjs`) runs a separate end-to-end pass over the whole workspace and returns `{ ok, result }` where `result.status` is `passed | failed` plus the collected `checks`, `failures`, and captured stdout/stderr.
+
+The phase runs, in order:
+
+1. **Isolation gate (before).** Same external-symlink / host-path / pnpm-entry guard as the per-node loop, re-run against the assembled workspace.
+2. **Dependency sync.** Installs the workspace's own dependencies (skipped with a reason when already satisfied).
+3. **Quality scripts.** Runs the workspace's `test`, `typecheck`, and `build` npm scripts when present; each missing script is recorded as `skipped` rather than failing. The first non-passing script short-circuits the phase.
+4. **Dev-server smoke.** `runDevServerSmoke` boots the workspace's `dev` script and probes that the server actually comes up on its port; a missing `dev` script fails the smoke check.
+5. **Isolation gate (after).** Re-checks isolation once the app has been installed and booted.
+
+> **Note — `lint` is not a real gate.** The harness exposes a `Lint` quality toggle (`config.quality.lint`, surfaced in the setup modal and the harness prompt sent to codex), but the runtime-verification phase only ever runs `test`, `typecheck`, and `build` — **no linter is executed**. Treat the Lint checkbox as a prompt hint to codex, not an enforced gate.
 
 ## Reliability details
 

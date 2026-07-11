@@ -3553,13 +3553,13 @@ await ensureRuntimeDirs();
 app.use(express.static(DIST_DIR));
 
 app.get(/^(?!\/api).*/, async (_req, res) => {
-  try {
-    res.sendFile(path.join(DIST_DIR, "index.html"));
-  } catch {
-    res
-      .status(503)
-      .send("Frontend bundle not found. Run `npm run build` once, or use `npm run dev` for local development.");
-  }
+  res.sendFile(path.join(DIST_DIR, "index.html"), (err) => {
+    if (err && !res.headersSent) {
+      res
+        .status(503)
+        .send("Frontend bundle not found. Run `npm run build` once, or use `npm run dev` for local development.");
+    }
+  });
 });
 
 app.listen(PORT, () => {
